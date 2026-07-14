@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import WebKit
 import SmartTubeIOSCore
 
 let authLog = CrashlyticsLogger(category: "Auth")
@@ -106,6 +107,19 @@ public final class AuthService {
             Task {
                 do { try await fetchUserInfo() }
                 catch { authLog.error("fetchUserInfo on init failed: \(String(describing: error))") }
+            }
+        }
+        // UI-testing override: wipe all auth state (in-memory + keychain +
+        // cookies) and immediately begin a device-code sign-in. Used by the
+        // TOSPlayerIOSUITests one-time setup script — the simulator's prior
+        // sign-in cookies were stale server-side, and the test needs a fresh
+        // `__Secure-YT_TVFAS` to pass. The test runner reads the userCode from
+        // the device log, shows it to the user, the user enters it at
+        // youtube.com/activate on a real device, and the sign-in completes.
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-trigger-sign-in") {
+            Task { @MainActor in
+                self.clearAllForTest()
+                await self.beginSignIn()
             }
         }
     }
@@ -232,6 +246,29 @@ public final class AuthService {
         accountAvatarURL = nil
         isSignedIn       = false
         pendingActivation = nil
+    }
+
+    /// Clears EVERYTHING (in-memory + keychain + cookies). Used by the test
+    /// setup path that needs to drive a fresh device-code sign-in (the
+    /// simulator's stale `__Secure-YT_TVFAS` from an earlier sign-in
+    /// wasn't being honored by YouTube's player-config check — see
+    /// TOSPlayerIOSUITests' skip message for the full root cause).
+    public func clearAllForTest() {
+        clearSession()
+        clearKeychain()
+        // Wipe both cookie stores (URLSession's binarycookies + WKWebView's
+        // origin index). Without this, the IFrame would still see stale
+        // cookies from the previous sign-in.
+        if let cookies = HTTPCookieStorage.shared.cookies {
+            for cookie in cookies {
+                HTTPCookieStorage.shared.deleteCookie(cookie)
+            }
+        }
+        let dataStore = WKWebsiteDataStore.default()
+        dataStore.removeData(ofTypes: [WKWebsiteDataTypeCookies], modifiedSince: Date(timeIntervalSince1970: 0)) {
+            authLog.notice("[clearAllForTest] WKWebsiteDataStore cookies removed")
+        }
+        authLog.notice("[clearAllForTest] cleared in-memory + keychain + HTTPCookieStorage + WKWebsiteDataStore")
     }
 
     /// Returns a valid access token, refreshing if necessary.
