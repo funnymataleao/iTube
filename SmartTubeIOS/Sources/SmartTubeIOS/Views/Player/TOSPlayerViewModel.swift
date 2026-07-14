@@ -370,20 +370,22 @@ final class TOSPlayerViewModel: NSObject {
         tosLog.notice("[vm] startIfNeededWhenWindowReady called, hasStartedLoading=\(self.hasStartedLoading)")
         guard !hasStartedLoading else { return }
         hasStartedLoading = true
-        // Wait 1.5s for the cover-present animation to complete before loading.
-        // The notification-based callback in YouTubeWebPlayerView fires the
-        // moment the WKWebView joins a key window, but `UIWindow.didBecomeKeyNotification`
-        // can fire before the SwiftUI cover-present's spring/duration animation
-        // has finished drawing the new view on top — and YouTube's IFrame
-        // 5s player-config check times out against a half-presented window.
-        // A 1.5s sleep after window-attach is the minimum that consistently
-        // clears the check on a first-cold-launch test sim (was 2.1s in the
-        // 20:41:00 log; 1.5s leaves 0.6s of headroom for the check).
+        // Delay before loading the IFrame. The historical reason for any delay
+        // here was the SwiftUI cover-present animation (UIKit .fullScreen modal)
+        // that hides the WKWebView's view during presentation — YouTube's 5s
+        // player-config check would time out against a hidden page, producing
+        // error 153. With the test-only inline presentation path (see
+        // RootView.swift `--uitesting-inline-tos`), the WKWebView is visible
+        // from frame 1, so we use a much smaller delay there. Production still
+        // uses the cover-present, where a small delay is still needed.
+        let useInlinePresentation = ProcessInfo.processInfo.arguments.contains("--uitesting-inline-tos")
+        let delaySeconds: TimeInterval = useInlinePresentation ? 0.3 : 1.5
+        tosLog.notice("[vm] startIfNeededWhenWindowReady — useInlinePresentation=\(useInlinePresentation) delaySeconds=\(delaySeconds)")
         // Using DispatchQueue.main.asyncAfter (not a Task @MainActor in)
-        // because the Task was being cancelled by the SwiftUI re-render
-        // cycle before the sleep completed — asyncAfter isn't subject to
-        // view-lifecycle cancellation.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20.0) { [weak self] in
+        // because Tasks get cancelled by the SwiftUI re-render cycle before
+        // the sleep completes — asyncAfter isn't subject to view-lifecycle
+        // cancellation.
+        DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
             guard let self else {
                 tosLog.notice("[vm] asyncAfter fired but self is nil — skipping")
                 return

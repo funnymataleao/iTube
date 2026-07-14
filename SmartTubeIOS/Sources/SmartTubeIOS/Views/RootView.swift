@@ -249,13 +249,23 @@ struct MainTabView: View {
         // TOS player full-screen cover — presented when tosState.presentation == .fullScreen.
         // TOSPlayerView reads tosState from the environment (injected via AppEntry) so the
         // WKWebView that was created by TOSPlayerStateStore.play(video:api:) is reused here.
+        //
+        // onFallback (2026-07-12): AVPlayer is disabled on iOS — the AVPlayer branch in
+        // PlayerRouter is gone, so calling playerRouter.open() from here would either
+        // re-enter TOS (the same embed that just failed) or be a no-op. Either way it
+        // hides the error from the user. Just log; the YouTube IFrame renders its own
+        // error UI inside the WKWebView. The user closes the player manually (back button
+        // → tosState.minimize) and re-taps the video to retry the embed.
+        //
+        // TEST-ONLY: when `--uitesting-inline-tos` is in launch args, the helper
+        // uses a direct SwiftUI `.overlay` instead of `landscapePlayerCover`'s UIKit
+        // modal. The cover-present animation hides the WKWebView in the test
+        // simulator long enough that YouTube's 5s player-config check times out
+        // (error 153). The inline path is full-bleed and the WKWebView is visible
+        // from frame 1.
         .landscapePlayerCover(item: tosFullScreenBinding, dismissStore: tosState) { video in
             TOSPlayerView(video: video, api: api) {
-                // Fatal IFrame error (embedding disabled / not found) — mark this
-                // video so PlayerRouter routes it to AVPlayer (and any future taps
-                // on the same video), then re-open it through the router.
-                tosState.markFallback(videoId: video.id)
-                playerRouter.open(video: video, api: api)
+                rootLog.notice("[RootView] TOS onFallback for videoId=\(video.id) — AVPlayer disabled, not routing away. User must close + re-tap to retry.")
             }
         }
         .onChange(of: browseVM.deepLinkedVideo) { _, video in

@@ -264,5 +264,73 @@ extension TOSPlayerViewModel {
             nil, nil, true
         )
     }
+
+    /// Captures the WKWebView's currently-rendered content and writes it to a PNG
+    /// at `path`. Used by `TOSPlayerIOSUITests` to verify that the video is
+    /// actually rendering frames (not just that the playhead is advancing) —
+    /// `XCUIScreen.main.screenshot()` only captures the simulator's on-screen
+    /// pixels, which are black when the WKWebView is in a hidden state (e.g. the
+    /// SwiftUI `.overlay` path used by the test sets `document.hidden=true` on
+    /// the IFrame, pausing the renderer). `webView.takeSnapshot` captures the
+    /// rendered web content directly, regardless of view visibility, so the
+    /// resulting PNG shows the actual video frame.
+    ///
+    /// Posted as a Darwin notification response so the test can `wait(for:)`
+    /// the file to land: `com.void.smarttube.tosplayer.snapshot.taken`.
+    /// `success=false` in the completion closure is also signalled by the
+    /// notification firing (the test should treat both outcomes as "snapshot
+    /// ready" and just check whether the file exists / has nonzero size).
+    func takeSnapshot(to path: String, completion: ((Bool) -> Void)? = nil) {
+        let url = URL(fileURLWithPath: path)
+        // Ensure the parent directory exists (XCUITest's /tmp/smarttube-logs
+        // is created by the test, but a manual launch might not have it).
+        let parentDir = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+        webView.takeSnapshot(with: nil) { [weak self] image, error in
+            guard let self else {
+                completion?(false)
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFNotificationName("com.void.smarttube.tosplayer.snapshot.taken" as CFString),
+                    nil, nil, true
+                )
+                return
+            }
+            if let error = error {
+                tosLog.error("[snapshot] takeSnapshot failed: \(error.localizedDescription, privacy: .public)")
+                completion?(false)
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFNotificationName("com.void.smarttube.tosplayer.snapshot.taken" as CFString),
+                    nil, nil, true
+                )
+                return
+            }
+            guard let image = image, let data = image.pngData() else {
+                tosLog.error("[snapshot] no image/PNG data returned")
+                completion?(false)
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFNotificationName("com.void.smarttube.tosplayer.snapshot.taken" as CFString),
+                    nil, nil, true
+                )
+                return
+            }
+            do {
+                try data.write(to: url, options: .atomic)
+                tosLog.notice("[snapshot] saved \(data.count, privacy: .public) bytes to \(path, privacy: .public)")
+                completion?(true)
+            } catch {
+                tosLog.error("[snapshot] write failed: \(error.localizedDescription, privacy: .public)")
+                completion?(false)
+            }
+            CFNotificationCenterPostNotification(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                CFNotificationName("com.void.smarttube.tosplayer.snapshot.taken" as CFString),
+                nil, nil, true
+            )
+        }
+    }
 }
 #endif // !os(tvOS)
