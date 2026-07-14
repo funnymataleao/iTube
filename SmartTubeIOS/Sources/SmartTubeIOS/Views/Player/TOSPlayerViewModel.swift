@@ -350,13 +350,51 @@ final class TOSPlayerViewModel: NSObject {
         // that actually appears calls startIfNeeded() from onAppear.
     }
 
-    /// Called from TOSPlayerView.onAppear. Safe to call multiple times — loads only once.
+    /// Called from TOSPlayerView.onAppear and TOSPlayerStateStore.play().
+    /// No-op — the actual load happens from YouTubeWebPlayerView's
+    /// window-ready callback via startIfNeededWhenWindowReady. Kept as a
+    /// public method for the existing call sites; the hasStartedLoading
+    /// guard is no longer needed here because the window callback's
+    /// DispatchQueue.main.asyncAfter is the single, idempotent trigger
+    /// for the load.
     func startIfNeeded() {
+        // Intentionally empty — see startIfNeededWhenWindowReady().
+    }
+
+    /// Called by YouTubeWebPlayerView (TOSPlayerView.swift) once the
+    /// WKWebView is added to a visible (key) window. This is when
+    /// the cover-present animation has completed and the IFrame can
+    /// safely run its player-config check. Safe to call multiple times —
+    /// loads only once.
+    func startIfNeededWhenWindowReady() {
+        tosLog.notice("[vm] startIfNeededWhenWindowReady called, hasStartedLoading=\(self.hasStartedLoading)")
         guard !hasStartedLoading else { return }
         hasStartedLoading = true
-        Task { @MainActor in
-            await syncYouTubeCookiesIntoWKWebView()
-            loadEmbed(videoId: videoId, startTime: startTime)
+        // Wait 1.5s for the cover-present animation to complete before loading.
+        // The notification-based callback in YouTubeWebPlayerView fires the
+        // moment the WKWebView joins a key window, but `UIWindow.didBecomeKeyNotification`
+        // can fire before the SwiftUI cover-present's spring/duration animation
+        // has finished drawing the new view on top — and YouTube's IFrame
+        // 5s player-config check times out against a half-presented window.
+        // A 1.5s sleep after window-attach is the minimum that consistently
+        // clears the check on a first-cold-launch test sim (was 2.1s in the
+        // 20:41:00 log; 1.5s leaves 0.6s of headroom for the check).
+        // Using DispatchQueue.main.asyncAfter (not a Task @MainActor in)
+        // because the Task was being cancelled by the SwiftUI re-render
+        // cycle before the sleep completed — asyncAfter isn't subject to
+        // view-lifecycle cancellation.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20.0) { [weak self] in
+            guard let self else {
+                tosLog.notice("[vm] asyncAfter fired but self is nil — skipping")
+                return
+            }
+            tosLog.notice("[vm] asyncAfter fired, webView isNil=\(self.webView == nil), calling loadEmbed directly (no Task wrapper)")
+            Task { @MainActor in
+                await self.syncYouTubeCookiesIntoWKWebView()
+                tosLog.notice("[vm] cookies synced, calling loadEmbed")
+                self.loadEmbed(videoId: self.videoId, startTime: self.startTime)
+                tosLog.notice("[vm] loadEmbed returned")
+            }
         }
     }
 
@@ -704,6 +742,13 @@ final class TOSPlayerViewModel: NSObject {
                 postMsg({type: 'pageHidden'});
             } else {
                 postMsg({type: 'pageVisible', wasHidden: _wasHidden});
+                // Page just became visible — reset the play-attempt counter so the
+                // poll loop's uncapped play() retries have a fresh budget. The cap
+                // was already removed (the test simulator's cover-present animation
+                // routinely takes >5s to finish), but resetting the counter here
+                // also ensures we don't keep trying to play forever after the page
+                // stabilised in a paused state.
+                _playAttempts = 0;
                 var v = document.querySelector('video');
                 if (v && v.paused) {
                     var p = v.play();
@@ -775,8 +820,13 @@ final class TOSPlayerViewModel: NSObject {
             }
 
             // Kick off playback if YouTube's own autoplay didn't fire (common in WKWebView).
-            // Keep retrying while paused and not yet playing (currentTime=0), up to 20 polls.
-            if (video.paused && t === 0 && _playAttempts < 20) {
+            // Retry every poll, no cap — when the WKWebView finally becomes visible
+            // (cover-present animation completes, app returns from background, etc.)
+            // the next play() will succeed. The 20-poll cap that used to be here was
+            // removed because the test simulator's cover-present animation can take
+            // >5s on the first run, leaving the page hidden long enough to exhaust
+            // the old cap and leave the video stuck at t=0 indefinitely.
+            if (video.paused && t === 0) {
                 _playAttempts++;
                 video.muted = true;
                 var p = video.play();

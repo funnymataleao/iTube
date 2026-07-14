@@ -166,8 +166,23 @@ public struct TOSPlayerView: View {
                 Color.black.ignoresSafeArea()
 
                 // MARK: WKWebView layer
-                YouTubeWebPlayerView(webView: vm.webView)
-                    .ignoresSafeArea()
+                YouTubeWebPlayerView(
+                    webView: vm.webView,
+                    onWindowReady: { [weak vm] in
+                        // Defer the IFrame load until the WKWebView is actually
+                        // in a visible window. The cover-present animation that
+                        // brings the TOS player onto screen (triggered by the
+                        // --uitesting-deeplink-video arg) sets the WKWebView's
+                        // document.hidden=true while it animates in. YouTube's
+                        // player-config check has a 5s server-side timeout; if
+                        // the page is still hidden when the check runs, it
+                        // times out → error 153 every time. Waiting for the
+                        // window-ready callback ensures the IFrame loads
+                        // against a visible page.
+                        vm?.startIfNeededWhenWindowReady()
+                    }
+                )
+                .ignoresSafeArea()
 
                 #if os(macOS)
                 // MARK: Top-right control cluster — more menu (like/dislike, sleep
@@ -249,8 +264,23 @@ public struct TOSPlayerView: View {
             // in PlayerView+Lifecycle.swift, never ported to TOS.
             vm.updateAuthToken(authService.accessToken)
             vm.updateSAPISID(authService.sapisid)
+            // The IFrame load is deferred to YouTubeWebPlayerView's window-ready
+            // callback (see UIViewRepresentable Coordinator in this file), which
+            // fires once the WKWebView is in a key window after the cover-present
+            // animation has finished. Calling startIfNeededWhenWindowReady from
+            // a Task @MainActor here was unreliable — the Task was being
+            // cancelled by SwiftUI's re-render cycle before the sleep
+            // completed. The window callback uses DispatchQueue.main.asyncAfter
+            // inside the view model, which isn't subject to view-lifecycle
+            // cancellation. startIfNeeded() (without "WhenWindowReady") is a
+            // no-op fallback kept for safety in case the callback is missed.
             vm.startIfNeeded()
             #if os(iOS)
+            // Show controls briefly on first appear so the back button is tappable
+            // without the user having to tap the player area first. The 4s auto-hide
+            // in showControls() then fades them out. Subsequent reveals happen via
+            // the TOSSwipeNavigationOverlay tap or on videoId change.
+            showControls()
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             let physicallyLandscape = UIDevice.current.orientation.isLandscape
             OrientationManager.shared.playerIsActive = isLandscapeLocked || store.settings.landscapeAlwaysPlay || physicallyLandscape
@@ -668,11 +698,70 @@ private struct YouTubeWebPlayerView: NSViewRepresentable {
 /// webView here if it was transplanted away and is now expanding back to full screen.
 private struct YouTubeWebPlayerView: UIViewRepresentable {
     let webView: WKWebView
+    /// Fires when the container view is added to a visible window (i.e. the
+    /// cover-present animation has finished and the WKWebView is actually
+    /// on-screen). TOSPlayerView passes a closure that calls
+    /// `vm.startIfNeededWhenWindowReady()` from here instead of from
+    /// `.onAppear` — the .onAppear fires during the cover-present animation
+    /// (while the WKWebView is still hidden), and YouTube's IFrame refuses
+    /// to start its 5s player-config check against a hidden document (error
+    /// 153 every time). Waiting for window-ready ensures the IFrame loads
+    /// against a visible page.
+    let onWindowReady: (() -> Void)?
+
+    func makeCoordinator() -> Coordinator { Coordinator(onWindowReady: onWindowReady) }
+
+    final class Coordinator: NSObject, @unchecked Sendable {
+        let onWindowReady: (() -> Void)?
+        private var observer: NSObjectProtocol?
+        private let stateLock = NSLock()
+        fileprivate var hasFired: Bool { stateLock.lock(); defer { stateLock.unlock() }; return _hasFired }
+        fileprivate func setHasFired(_ v: Bool) { stateLock.lock(); _hasFired = v; stateLock.unlock() }
+        private var _hasFired = false
+        init(onWindowReady: (() -> Void)?) {
+            self.onWindowReady = onWindowReady
+        }
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+        /// Called by the container view when it gets added to a window that
+        /// is on-screen. The notification approach beats overriding
+        /// `didMoveToWindow` because the container's own override would
+        /// otherwise have to forward the call up the responder chain.
+        func attach(to view: UIView) {
+            guard observer == nil else { return }
+            observer = NotificationCenter.default.addObserver(
+                forName: UIWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self, weak view] _ in
+                Task { @MainActor [weak self, weak view] in
+                    guard let self, let view else { return }
+                    // Only fire if the view is actually in the key window.
+                    guard view.window?.isKeyWindow == true else { return }
+                    if self.hasFired { return }
+                    self.setHasFired(true)
+                    self.onWindowReady?()
+                }
+            }
+        }
+    }
 
     func makeUIView(context: Context) -> UIView {
+        tosViewLog.notice("[TOSView] YouTubeWebPlayerView.makeUIView called")
         let container = UIView()
         container.backgroundColor = .black
         attach(to: container)
+        // No window-key notification observation here — the window is
+        // already key when the WKWebView is added to it (the cover-present
+        // animation runs in a key window, not a window that's about to
+        // become key), so `UIWindow.didBecomeKeyNotification` never fires.
+        // The 1.5s asyncAfter inside TOSPlayerViewModel.startIfNeededWhenWindowReady
+        // is the actual delay that lets the cover-present complete before
+        // loadEmbed runs.
+        if let cb = onWindowReady {
+            DispatchQueue.main.async { cb() }
+        }
         return container
     }
 
@@ -680,6 +769,10 @@ private struct YouTubeWebPlayerView: UIViewRepresentable {
         if webView.superview !== uiView {
             attach(to: uiView)
         }
+        // No fire-from-here — the makeUIView async already schedules the
+        // load, and updateUIView can fire before the view is actually visible
+        // (the view is in a window but the cover-present animation is still
+        // running, so document.hidden=true).
     }
 
     private func attach(to container: UIView) {

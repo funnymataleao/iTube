@@ -125,10 +125,20 @@ extension TOSPlayerViewModel {
 
         case "pageHidden":
             tosLog.notice("[ytCallback] 📴 page hidden (app backgrounded)")
+            CFNotificationCenterPostNotification(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                CFNotificationName("com.void.smarttube.tosplayer.pagehidden" as CFString),
+                nil, nil, true
+            )
 
         case "pageVisible":
             let wasHidden = (json["wasHidden"] as? Bool) ?? false
             tosLog.notice("[ytCallback] 📲 page visible (wasHidden=\(wasHidden, privacy: .public))")
+            CFNotificationCenterPostNotification(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                CFNotificationName("com.void.smarttube.tosplayer.pagevisible" as CFString),
+                nil, nil, true
+            )
 
         case "bgRemute":
             let bgrT = (json["t"] as? Double) ?? 0
@@ -184,6 +194,27 @@ extension TOSPlayerViewModel {
                 CFNotificationCenterPostNotification(
                     CFNotificationCenterGetDarwinNotifyCenter(),
                     CFNotificationName("com.void.smarttube.tosplayer.state.\(s)" as CFString),
+                    nil, nil, true
+                )
+            }
+            // "timeadvanced" — fires ONCE, on the first tick where currentTime has
+            // moved past 0.1 while the player is in state=playing. The existing
+            // "playing" Darwin notification is loose: it fires on state=1 OR
+            // state=3 (buffering), so a stuck-at-t=0 buffering IFrame triggers it
+            // without the playhead ever moving. "timeadvanced" is the strict
+            // signal that the video is actually playing — used by the iOS UI
+            // test (TOSPlayerIOSUITests) to gate the "video is actually playing"
+            // assertion and the screenshot capture. Without it, the test would
+            // pass on a thumbnail screenshot, which is what bit us in the
+            // previous turn. The t > 0.1 threshold matches the existing
+            // autoUnmuted JS check (stateDetectionJS, `_autoUnmuted` branch),
+            // so the two signals share the same notion of "actually playing".
+            if !hasReceivedTimeAdvanced, newState == .playing, t > 0.1 {
+                hasReceivedTimeAdvanced = true
+                tosLog.notice("[ytCallback] 🎬 time advanced — t=\(t, format: .fixed(precision: 2))s, state=\(s) — firing timeadvanced notification")
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFNotificationName("com.void.smarttube.tosplayer.timeadvanced" as CFString),
                     nil, nil, true
                 )
             }

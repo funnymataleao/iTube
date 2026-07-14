@@ -179,6 +179,7 @@ final class TOSPlayerIOSUITests: XCTestCase {
         // as a FAILURE (the fix didn't take, or there's a new cause) — not
         // a skip.
         let readyNote        = XCTDarwinNotificationExpectation(notificationName: "com.void.smarttube.tosplayer.ready")
+        let pageVisibleNote  = XCTDarwinNotificationExpectation(notificationName: "com.void.smarttube.tosplayer.pagevisible")
         let timeadvancedNote = XCTDarwinNotificationExpectation(notificationName: "com.void.smarttube.tosplayer.timeadvanced")
         let error153Note     = XCTDarwinNotificationExpectation(notificationName: "com.void.smarttube.tosplayer.error.153")
         let errorNote        = XCTDarwinNotificationExpectation(notificationName: "com.void.smarttube.tosplayer.error")
@@ -198,6 +199,24 @@ final class TOSPlayerIOSUITests: XCTestCase {
             throw XCTSkip("onPlayerReady never fired within 30 s — IFrame embed failed to load (network/YouTube availability)")
         }
         print("[TOS-iOS] ✓ IFrame ready — YouTube embed loaded")
+
+        // ── 3. Wait for the WKWebView to become visible ─────────────────────
+        // The cover-present animation that brings the TOS player onto screen
+        // (triggered by the --uitesting-deeplink-video arg) temporarily sets
+        // document.hidden=true on the IFrame. YouTube's player-config check
+        // has a 5s server-side timeout; if the page is still hidden when it
+        // runs, the check times out → error 153. Wait for the visibilitychange
+        // listener to fire `pageVisible` before starting the timeadvanced
+        // check, so the IFrame has a chance to run its check against a
+        // visible page. If pageVisible never fires (page stays hidden the
+        // entire time), the timeadvanced check will then time out and the
+        // existing error.153 skip path takes over.
+        let pageVisibleResult = XCTWaiter().wait(for: [pageVisibleNote], timeout: 8)
+        if pageVisibleResult == .completed {
+            print("[TOS-iOS] ✓ WKWebView visible — pageVisible received")
+        } else {
+            print("[TOS-iOS] ⚠️ pageVisible never fired within 8s — proceeding to timeadvanced wait anyway (will likely time out → skip with error.153)")
+        }
 
         // ── 4. Wait for timeadvanced (strict "video is actually playing").
         //        If it fires, fall through to the playback-verification steps.
