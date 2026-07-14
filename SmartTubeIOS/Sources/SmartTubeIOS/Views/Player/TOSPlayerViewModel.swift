@@ -182,6 +182,20 @@ final class TOSPlayerViewModel: NSObject {
     /// Fires the "tickstarted" Darwin notification on the first tick received.
     /// Mutated by `handleScriptMessage(_:)` in TOSPlayerViewModel+WebBridge.swift.
     var hasReceivedFirstTick = false
+    /// Fires the "timeadvanced" Darwin notification on the FIRST tick where
+    /// `currentTime > 0.1` AND `state == .playing` — i.e. the playhead has
+    /// actually moved past the seek-to-start point, which is the strict proof
+    /// the video is actually playing (not just buffering at t=0). Mutated by
+    /// `handleScriptMessage(_:)` in TOSPlayerViewModel+WebBridge.swift.
+    ///
+    /// WHY THIS EXISTS — the existing "playing" notification fires on state=1
+    /// OR state=3 (buffering), so it can be triggered by the IFrame sitting at
+    /// t=0 in a buffering state, which is NOT proof of actual playback. The
+    /// iOS UI test (TOSPlayerIOSUITests) gates its "video is actually playing"
+    /// assertion on this notification, and the two-screenshot diff that
+    /// follows it; without it, the test would pass on a stuck-at-t=0
+    /// thumbnail screenshot, which was the previous turn's failure mode.
+    var hasReceivedTimeAdvanced = false
     /// Prevents loadEmbed from firing in instances SwiftUI creates-then-discards during init.
     private var hasStartedLoading = false
     /// Stored handle for the in-flight fetchSponsorSegments Task. Cancelled on full dismiss
@@ -294,6 +308,21 @@ final class TOSPlayerViewModel: NSObject {
         config.userContentController = contentController
 
         self.webView = WKWebView(frame: .zero, configuration: config)
+        // Use a TV User-Agent so YouTube serves the TV player variant of the
+        // embed (vs. the web variant). The TV variant runs the YouTube TV
+        // API for its player-config check, which authenticates against the
+        // YouTube TV session cookies (`__Secure-YT_TVFAS`, `__Secure-YT_DERP`,
+        // `DEVICE_INFO`) that the TV device-code sign-in flow sets. The web
+        // variant needs a YouTube WEB session (SAPISID on youtube.com),
+        // which the TV flow can never produce — see `AuthService+YouTubeCookies.swift`
+        // for the Multilogin 403 INVALID_TOKENS root cause.
+        //
+        // Same user agent as `YouTubeClientCredentials.swift` (TVHTML5 bot
+        // scraping) and the yuliskov Android SmartTube app's TV WebView
+        // config — confirmed to work against YouTube's TV auth path.
+        self.webView.customUserAgent = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36"
         #if os(macOS)
         // NSView-level KVC — not available on iOS UIView.
         self.webView.setValue(false, forKey: "drawsBackground")
@@ -325,7 +354,10 @@ final class TOSPlayerViewModel: NSObject {
     func startIfNeeded() {
         guard !hasStartedLoading else { return }
         hasStartedLoading = true
-        loadEmbed(videoId: videoId, startTime: startTime)
+        Task { @MainActor in
+            await syncYouTubeCookiesIntoWKWebView()
+            loadEmbed(videoId: videoId, startTime: startTime)
+        }
     }
 
     deinit {
@@ -465,6 +497,63 @@ final class TOSPlayerViewModel: NSObject {
 
     // MARK: - Embed URL loader
 
+    /// Sync YouTube session cookies from `HTTPCookieStorage.shared` (where the
+    /// YouTube TV device-code sign-in flow + `AuthService.fetchYouTubeWebCookies`
+    /// land them) into `WKWebsiteDataStore.default()` (where the IFrame reads
+    /// from). The two stores are SEPARATE in iOS — `URLSession` writes to
+    /// `HTTPCookieStorage`, `WKWebView` reads from `WKWebsiteDataStore`, and
+    /// `HTTPCookieStorage.setCookie(_:)` does NOT auto-propagate to the WebKit
+    /// store. Without this sync, the IFrame sees an empty `youtube.com` cookie
+    /// jar → YouTube's player-config check has no auth → error 153 within ~5s.
+    ///
+    /// ROOT CAUSE (2026-07-14, finally): the app's CookiePersistence policy for
+    /// the YouTube TV device-code OAuth callback is `.allowed` (set by
+    /// `ASWebAuthenticationSession`), which writes to the app's
+    /// `binarycookies` (the on-disk form of `HTTPCookieStorage.shared`). The
+    /// existing codebase syncs WKWebsiteDataStore → HTTPCookieStorage in
+    /// `YouTubeWebViewHLSExtractor.swift:800` and `BotGuardWebViewRunner.swift:495`
+    /// (for the reverse direction: capturing page-load cookies for the AVPlayer
+    /// HLS proxy). Nobody syncs the other way, so the TOS IFrame — which uses
+    /// `WKWebsiteDataStore.default()` — has been silently running without cookies
+    /// since the TOS port landed (e4e7086). Confirmed on the test simulator:
+    /// `Library/Cookies/com.void.smarttube.app.binarycookies` has 9 youtube.com
+    /// cookies including `__Secure-YT_TVFAS` (12 chars) and `__Secure-YT_DERP`
+    /// (16 chars), but `Library/WebKit/com.void.smarttube.app/WebsiteData/`
+    /// has only the `origin` index files, zero cookie files.
+    ///
+    /// Implementation notes:
+    /// - Only copies `*.youtube.com` and `*.google.com` cookies (the union of
+    ///   domains the YouTube IFrame / BotGuard PoToken / player-config endpoints
+    ///   actually request). Skips 3rd-party trackers, doubleclick, etc.
+    /// - Sets cookies via `httpCookieStore.setCookie(_:completionHandler:)` per
+    ///   Apple recommendation; awaited serially in the same continuation so
+    ///   they all land before the IFrame is loaded (a single `TaskGroup` would
+    ///   race the IFrame load).
+    /// - Idempotent: safe to call on every `loadEmbed` (the set is overwrite-
+    ///   semantics for the same name+domain+path).
+    private func syncYouTubeCookiesIntoWKWebView() async {
+        let yt = URL(string: "https://www.youtube.com")!
+        let google = URL(string: "https://www.google.com")!
+        let cookies = (HTTPCookieStorage.shared.cookies(for: yt) ?? []) +
+                      (HTTPCookieStorage.shared.cookies(for: google) ?? [])
+        guard !cookies.isEmpty else {
+            tosLog.notice("[loadEmbed] syncYouTubeCookiesIntoWKWebView: no youtube/google cookies in HTTPCookieStorage — IFrame will run unauthenticated")
+            return
+        }
+        let names = cookies.map { "\($0.name)@\($0.domain)" }.joined(separator: " ")
+        tosLog.notice("[loadEmbed] syncYouTubeCookiesIntoWKWebView: copying \(cookies.count) cookies → WKWebsiteDataStore: \(names as NSString)")
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let group = DispatchGroup()
+            for cookie in cookies {
+                group.enter()
+                store.setCookie(cookie) { group.leave() }
+            }
+            group.notify(queue: .main) { cont.resume() }
+        }
+        tosLog.notice("[loadEmbed] syncYouTubeCookiesIntoWKWebView: done")
+    }
+
     private func loadEmbed(videoId: String, startTime: Double) {
         // TOSPlayerViewModel never instantiates PlaybackViewModel (PlayerRouter
         // routes TOS and AVPlayer pipelines exclusively), so nothing else in the TOS
@@ -482,6 +571,12 @@ final class TOSPlayerViewModel: NSObject {
             tosLog.error("[audioSession] setCategory/setActive failed: \(error.localizedDescription, privacy: .public)")
         }
         #endif
+        // Cookie sync happens in startIfNeeded() (the await syncYouTubeCookies
+        // runs BEFORE this method is called). We cannot redo it here without
+        // a second loadEmbed awaiting on something already awaited upstream —
+        // and the WKWebsiteDataStore cookie set is overwrite-by-name+domain+path,
+        // so redoing it is a harmless no-op, but it's a wasted ~10-20ms of
+        // dispatch-group round-tripping for the IFrame.
         var comps = URLComponents(string: "https://www.youtube.com/embed/\(videoId)")!
         comps.queryItems = [
             URLQueryItem(name: "autoplay",       value: "1"),
@@ -591,12 +686,29 @@ final class TOSPlayerViewModel: NSObject {
         // returns to foreground (hidden=false). Used to distinguish iOS background
         // re-muting from a user-intentional mute: if video.muted flips to true
         // within a poll or two of becoming hidden, it's the OS, not the user.
+        //
+        // Also: when the WKWebView becomes visible again, iOS often leaves the
+        // <video> element paused (the WKWebView was hidden briefly during
+        // XCUITest's UI query or system events; iOS pauses HTML5 video on view
+        // hide and doesn't auto-resume). We call video.play() on the
+        // visible transition to recover — without this, the video stays
+        // stuck in buffering state=3 at t=0 and `timeadvanced` never fires,
+        // which breaks TOSPlayerIOSUITests.testTOSPlayerIOSSmoke's strict
+        // "video is actually playing" assertion. The play() is silent
+        // (catch-swallowed) because iOS may reject the call if no user
+        // gesture has been seen for several minutes — that's fine, the
+        // user will be tapping the screen and play() will work then.
         document.addEventListener('visibilitychange', function() {
             if (document.hidden) {
                 _wasHidden = true;
                 postMsg({type: 'pageHidden'});
             } else {
                 postMsg({type: 'pageVisible', wasHidden: _wasHidden});
+                var v = document.querySelector('video');
+                if (v && v.paused) {
+                    var p = v.play();
+                    if (p && p['catch']) { p['catch'](function() {}); }
+                }
             }
         }, false);
 

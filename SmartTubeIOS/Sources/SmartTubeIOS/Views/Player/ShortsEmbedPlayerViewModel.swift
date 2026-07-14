@@ -195,6 +195,16 @@ final class ShortsEmbedPlayerViewModel: NSObject {
         config.userContentController = contentController
 
         self.webView = WKWebView(frame: .zero, configuration: config)
+        // TV User-Agent so YouTube serves the TV player variant — same reason
+        // as TOSPlayerViewModel.swift. The TV variant uses the YouTube TV API
+        // for its auth check, which authenticates against the TV session
+        // cookies (TVFAS etc.) that the TV device-code sign-in flow sets. The
+        // web variant needs a YouTube WEB session (SAPISID) which the TV flow
+        // can't produce. See AuthService+YouTubeCookies.swift for the
+        // Multilogin 403 INVALID_TOKENS root cause.
+        self.webView.customUserAgent = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36"
         #if os(iOS)
         // isOpaque=false forces WebKit into software compositing, which silently
         // disables the hardware-accelerated <video> layer — the JS bridge still
@@ -271,7 +281,14 @@ final class ShortsEmbedPlayerViewModel: NSObject {
             swapEmbed(to: video.id)
         } else {
             hasStarted = true
-            startEmbed(videoId: video.id)
+            // Sync YouTube cookies from HTTPCookieStorage → WKWebsiteDataStore
+            // BEFORE startEmbed's loadHTMLString. Mirrors TOSPlayerViewModel's
+            // startIfNeeded fix (same root cause — see TOSPlayerViewModel.swift
+            // doc comment for syncYouTubeCookiesIntoWKWebView).
+            Task { @MainActor in
+                await self.syncYouTubeCookiesIntoWKWebView()
+                self.startEmbed(videoId: video.id)
+            }
         }
 
         startReadyTimeout(for: video.id)
@@ -333,10 +350,39 @@ final class ShortsEmbedPlayerViewModel: NSObject {
             shortsLog.error("[\(self.logTag, privacy: .public)] [audioSession] setActive(true) failed: \(error.localizedDescription, privacy: .public)")
         }
         #endif
+        // Cookie sync happens in loadShort (the await syncYouTubeCookies runs
+        // BEFORE this method is called). See TOSPlayerViewModel.swift doc
+        // comment for syncYouTubeCookiesIntoWKWebView for the root cause.
         let url = ShortsEmbedURL.embedURL(videoId: videoId)
         let html = ShortsEmbedURL.htmlWrapper(embedURL: url)
         shortsLog.notice("[\(self.logTag, privacy: .public)] [loadShort] initial load — videoId=\(videoId, privacy: .public)")
         webView.loadHTMLString(html, baseURL: URL(string: "https://www.example.com")!)
+    }
+
+    /// Sync YouTube session cookies from HTTPCookieStorage.shared into
+    /// WKWebsiteDataStore.default(). See TOSPlayerViewModel.syncYouTubeCookiesIntoWKWebView
+    /// for the full root-cause story — the same bug applies here.
+    private func syncYouTubeCookiesIntoWKWebView() async {
+        let yt = URL(string: "https://www.youtube.com")!
+        let google = URL(string: "https://www.google.com")!
+        let cookies = (HTTPCookieStorage.shared.cookies(for: yt) ?? []) +
+                      (HTTPCookieStorage.shared.cookies(for: google) ?? [])
+        guard !cookies.isEmpty else {
+            shortsLog.notice("[\(self.logTag, privacy: .public)] [loadShort] no youtube/google cookies in HTTPCookieStorage — IFrame will run unauthenticated")
+            return
+        }
+        let names = cookies.map { "\($0.name)@\($0.domain)" }.joined(separator: " ")
+        shortsLog.notice("[\(self.logTag, privacy: .public)] [loadShort] copying \(cookies.count) cookies → WKWebsiteDataStore: \(names as NSString)")
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let group = DispatchGroup()
+            for cookie in cookies {
+                group.enter()
+                store.setCookie(cookie) { group.leave() }
+            }
+            group.notify(queue: .main) { cont.resume() }
+        }
+        shortsLog.notice("[\(self.logTag, privacy: .public)] [loadShort] cookie sync done")
     }
 
     /// Every load after the first — swaps the already-loaded `<iframe id="yt">`'s
