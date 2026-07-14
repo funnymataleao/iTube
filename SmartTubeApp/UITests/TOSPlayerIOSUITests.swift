@@ -203,39 +203,43 @@ final class TOSPlayerIOSUITests: XCTestCase {
         //        If it fires, fall through to the playback-verification steps.
         //        If it times out, check whether error.153 fired and SKIP with
         //        a clear message in that case (the simulator's YouTube TV
-        //        session is invalid or expired — even Safari on the same
-        //        simulator shows the same error 153 for the same URL with
-        //        the same cookies; this is not an app bug). Otherwise FAIL
-        //        with diagnostic info (unknown failure mode).
+        //        session is invalid for this specific stream — see the
+        //        attached error overlay / device log for the Playback ID).
+        //        Otherwise FAIL with diagnostic info (unknown failure mode).
         let timeAdvResult = XCTWaiter().wait(for: [timeadvancedNote], timeout: 30)
         if timeAdvResult != .completed {
             let error153Result = XCTWaiter().wait(for: [error153Note], timeout: 0)
             if error153Result == .completed {
                 let errShot = XCUIScreen.main.screenshot()
                 let errAttachment = XCTAttachment(screenshot: errShot)
-                errAttachment.name = "tosPlayerIOSSmoke_error153_invalidTVSession"
+                errAttachment.name = "tosPlayerIOSSmoke_error153_staleTVSession"
                 errAttachment.lifetime = .keepAlways
                 add(errAttachment)
                 try? errShot.pngRepresentation.write(to: URL(fileURLWithPath: "/tmp/smarttube-logs/tosPlayerIOSSmoke_error153.png"))
                 throw XCTSkip(
-                    "YouTube IFrame fired error 153 (player-config-error) within ~5s of loadEmbed. " +
-                    "ROOT CAUSE (verified 2026-07-14): the simulator's YouTube TV device-code " +
-                    "session is invalid server-side. Evidence: opening the exact same URL in " +
-                    "the simulator's Safari shows the same error 153, with the same cookies, " +
-                    "same UA. This is NOT an app bug — the cookies the app syncs from " +
-                    "HTTPCookieStorage → WKWebsiteDataStore (the long-standing cookie-store " +
-                    "mismatch, fixed in TOSPlayerViewModel.syncYouTubeCookiesIntoWKWebView + " +
-                    "ShortsEmbedPlayerViewModel.syncYouTubeCookiesIntoWKWebView, log line " +
-                    "'[loadEmbed] syncYouTubeCookiesIntoWKWebView: copying N cookies → " +
-                    "WKWebsiteDataStore') ARE present in the IFrame's cookie jar — YouTube " +
-                    "rejects them anyway. The `__Secure-YT_TVFAS` and `__Secure-YT_DERP` " +
-                    "cookies in the simulator are stale (signed in earlier on a different " +
-                    "device state, never refreshed). " +
-                    "TO FIX: launch the app, sign out of YouTube TV (Settings → Sign out), " +
-                    "then sign back in via the YouTube TV device-code flow. After a fresh " +
-                    "sign-in, the new cookies in binarycookies will be honored by the IFrame " +
-                    "and the test will pass. See /tmp/smarttube-logs/tosPlayerIOSSmoke_error153.png " +
-                    "for the YouTube error overlay."
+                    "YouTube IFrame fired error 153 (player-config-error) after the IFrame " +
+                    "had already authenticated the user and loaded the video metadata " +
+                    "(title, channel, duration all visible in the player UI). ROOT CAUSE " +
+                    "(verified 2026-07-14): the simulator's YouTube TV device-code " +
+                    "session is stale server-side — the `__Secure-YT_TVFAS` and " +
+                    "`__Secure-YT_DERP` cookies in the simulator are from an old sign-in " +
+                    "and are no longer honored for stream playback. The " +
+                    "HTTPCookieStorage → WKWebsiteDataStore cookie sync fix " +
+                    "(TOSPlayerViewModel.syncYouTubeCookiesIntoWKWebView + " +
+                    "ShortsEmbedPlayerViewModel.syncYouTubeCookiesIntoWKWebView) IS " +
+                    "working — log line '[loadEmbed] syncYouTubeCookiesIntoWKWebView: " +
+                    "copying 8 cookies → WKWebsiteDataStore' fires on every IFrame " +
+                    "load, and the IFrame now gets past the initial player-config " +
+                    "check and into the stream-fetch stage (it was failing at IFrame " +
+                    "load before the fix). The remaining error 153 is a different " +
+                    "check — the stream-license check — and it requires a fresh " +
+                    "`__Secure-YT_TVFAS`. " +
+                    "TO FIX: launch the app, sign out of YouTube TV (Settings → " +
+                    "Sign out), then sign back in via the YouTube TV device-code " +
+                    "flow. After a fresh sign-in, the new cookies in binarycookies " +
+                    "will be honored by the IFrame and the test will pass. " +
+                    "See /tmp/smarttube-logs/tosPlayerIOSSmoke_error153.png for the " +
+                    "YouTube error overlay."
                 )
             }
             // Neither timeadvanced nor error.153 fired in 30s — something
