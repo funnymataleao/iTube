@@ -28,6 +28,7 @@ public enum StreamMethodProbeSupport {
         "mweb",
         "android",
         "android-vr",
+        "visionos",
         "web-creator",
         "web-auth",
         "wkwebview-hls",

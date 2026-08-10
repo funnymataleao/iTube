@@ -12,6 +12,58 @@ private typealias VideoFormat = SmartTubeIOSCore.VideoFormat
 
 private let playerLog = CrashlyticsLogger(category: "Player")
 
+/// Client-specific HLS settings used for both initial playback and quality changes.
+struct HLSPlaybackPolicy: Equatable, Sendable {
+    let userAgent: String
+    let maximumHeight: Int?
+    let filtersMasterManifest: Bool
+    let requiresH264: Bool
+
+    static func resolve(label: String, isHLS: Bool) -> Self {
+        guard isHLS else {
+            return Self(
+                userAgent: "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)",
+                maximumHeight: nil,
+                filtersMasterManifest: false,
+                requiresH264: false
+            )
+        }
+        if label.localizedCaseInsensitiveContains("visionos") {
+            return Self(
+                userAgent: InnerTubeClients.VisionOS.userAgent,
+                maximumHeight: InnerTubeClients.VisionOS.maximumHLSHeight,
+                filtersMasterManifest: true,
+                requiresH264: true
+            )
+        }
+        if label.contains("WebSafari") {
+            return Self(
+                userAgent: InnerTubeClients.WebSafari.userAgent,
+                maximumHeight: nil,
+                filtersMasterManifest: false,
+                requiresH264: false
+            )
+        }
+        return Self(
+            userAgent: "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)",
+            maximumHeight: nil,
+            filtersMasterManifest: false,
+            requiresH264: false
+        )
+    }
+
+    func cappedHeight(requested: Int?) -> Int? {
+        guard let maximumHeight else { return requested }
+        return min(requested ?? maximumHeight, maximumHeight)
+    }
+
+    func allowsFormat(height: Int, mimeType: String) -> Bool {
+        if let maximumHeight, height > maximumHeight { return false }
+        if requiresH264, !mimeType.contains("avc1") { return false }
+        return true
+    }
+}
+
 // MARK: - Exhaustive Playback Retry
 
 extension PlaybackViewModel {
@@ -40,6 +92,27 @@ extension PlaybackViewModel {
             await probeStreamMethod(method, video: video)
             return
         }
+        #if os(tvOS)
+        // tvOS cannot use the WKWebView/BotGuard recovery available on iOS/macOS.
+        // Current yt-dlp uses VISIONOS as its primary JS-less Apple client. After
+        // seeding a normal YouTube webpage session it returns token-free HLS with
+        // H.264 through 1080p, which AVPlayer handles natively on Apple TV.
+        do {
+            let visionInfo = try await api.fetchPlayerInfoVisionOS(videoId: video.id)
+            if await tryAllStreams(
+                video: video,
+                info: visionInfo,
+                label: "VisionOS",
+                skipMuxed: true
+            ) {
+                playerLog.notice("[VisionOS] ✅ native HLS playback — exhaustiveRetry done")
+                return
+            }
+            playerLog.notice("[VisionOS] HLS/adaptive playback failed — continuing legacy fallbacks")
+        } catch {
+            playerLog.notice("[VisionOS] player request failed: \(error) — continuing legacy fallbacks")
+        }
+        #endif
         #if canImport(WebKit)
         // Phase -1a: Cached WKWebView HLS URL shortcut — skip 5–9 s extraction when the
         // master manifest URL for this video was stored by a prior session or neighbour
@@ -890,6 +963,8 @@ extension PlaybackViewModel {
         playerLog.notice("[\(label)]: \(url.absoluteString.prefix(120))")
 
         playerInfo = info
+        let isHLSManifest = label.contains("/HLS")
+        let hlsPolicy = HLSPlaybackPolicy.resolve(label: label, isHLS: isHLSManifest)
         let newFormats = Self.deduplicatedVideoFormats(info.formats)
         // Never reduce quality options for adaptive/HLS streams — preserve the richest set seen.
         // Exception: muxed fallback (label contains "/muxed") always resets availableFormats to
@@ -909,37 +984,67 @@ extension PlaybackViewModel {
         var applyHLSHints = false
         if let hlsURL = info.hlsURL, url == hlsURL {
             let videoId = video.id
-            let variantURLs: [Int: URL]
-            if let cached = PlaybackQualityManager.cachedHLSVariants(for: videoId) {
+            let allVariantURLs: [Int: URL]
+            if hlsPolicy.filtersMasterManifest {
+                let fetched = await qualityManager.fetchHLSVariantURLs(
+                    url: hlsURL, userAgent: hlsPolicy.userAgent
+                )
+                if fetched.isEmpty,
+                   let cached = PlaybackQualityManager.cachedHLSVariants(for: videoId) {
+                    allVariantURLs = cached
+                } else {
+                    allVariantURLs = fetched
+                }
+                if !fetched.isEmpty {
+                    PlaybackQualityManager.cacheHLSVariants(fetched, for: videoId)
+                }
+            } else if let cached = PlaybackQualityManager.cachedHLSVariants(for: videoId) {
                 playerLog.notice("[\(label)] HLS: using cached manifest for \(videoId) variantCount=\(cached.count)")
-                variantURLs = cached
+                allVariantURLs = cached
             } else {
-                variantURLs = await fetchHLSVariantURLs(url: hlsURL)
-                if !variantURLs.isEmpty {
-                    PlaybackQualityManager.cacheHLSVariants(variantURLs, for: videoId)
+                let fetched = await fetchHLSVariantURLs(url: hlsURL)
+                allVariantURLs = fetched
+                if !fetched.isEmpty {
+                    PlaybackQualityManager.cacheHLSVariants(fetched, for: videoId)
                 }
             }
-            playerLog.notice("[\(label)] HLS: hlsURL=yes variantCount=\(variantURLs.count) preferredQuality=\(settings.preferredQuality)")
+            let variantURLs = hlsPolicy.maximumHeight.map { cap in
+                allVariantURLs.filter { $0.key <= cap }
+            } ?? allVariantURLs
+            playerLog.notice("[\(label)] HLS: hlsURL=yes variantCount=\(variantURLs.count) effectiveQuality=\(effectiveQuality)")
+            if hlsPolicy.requiresH264 {
+                availableFormats = availableFormats.filter { format in
+                    hlsPolicy.allowsFormat(height: format.height, mimeType: format.mimeType)
+                }
+            }
             if !variantURLs.isEmpty {
                 hlsVariantURLs = variantURLs
-                availableFormats = availableFormats.filter { variantURLs.keys.contains($0.height) }
+                let playableFormats = availableFormats.filter { variantURLs.keys.contains($0.height) }
+                availableFormats = playableFormats
                 // Use a variant playlist URL directly rather than the master manifest URL.
                 // The master manifest (hls_variant) stalls AVPlayer on manifest.googlevideo.com
                 // because it requires session-level auth that AVPlayer's isolated network stack
                 // cannot provide. Variant playlist URLs (hls_playlist) are directly downloadable
                 // — yt-dlp confirms 720p in 13 s, 1080p in 29 s for the same video.
-                let preferredMaxH = settings.preferredQuality == .auto ? nil : settings.preferredQuality.maxHeight
+                // Per-video pick (when set) takes precedence over the persisted default —
+                // a mid-playback 403 recovery must not silently revert the user's choice.
+                let preferredMaxH = hlsPolicy.cappedHeight(requested: effectiveQuality.maxHeight)
                 let chosen = preferredMaxH
                     .flatMap { h in variantURLs.filter { $0.key <= h }.max(by: { $0.key < $1.key }) }
                     ?? variantURLs.max(by: { $0.key < $1.key })
                 if let chosen {
-                    let variantURL = chosen.value
-                    effectiveURL = variantURL
-                    playerLog.notice("[\(label)] HLS: selected variant \(chosen.key)p")
+                    if hlsPolicy.filtersMasterManifest {
+                        effectiveURL = hlsURL
+                        playerLog.notice("[\(label)] HLS: using H.264-filtered master with \(chosen.key)p cap and audio renditions")
+                    } else {
+                        effectiveURL = chosen.value
+                        playerLog.notice("[\(label)] HLS: selected variant \(chosen.key)p")
+                    }
                     // DIAGNOSTIC D-14: probe variant playlist + first segment before handing to AVPlayer.
                     // Ephemeral session → no cookies, no shared state.
                     // 200 → URL is publicly accessible; 403 → YouTube session (SAPISID) required.
                     // Also logs first segment URL to determine if rqh=1 is enforced at segment level.
+                    let variantURL = chosen.value
                     let capturedLabel = label
                     let capturedAuthToken = currentAuthToken
                     Task.detached {
@@ -1015,6 +1120,11 @@ extension PlaybackViewModel {
             } else {
                 playerLog.notice("[\(label)] HLS manifest fetch returned 0 variants — using master as-is")
             }
+            qualityManager.configureHLSPlayback(
+                userAgent: hlsPolicy.userAgent,
+                maximumHeight: hlsPolicy.maximumHeight,
+                requiredVideoCodec: hlsPolicy.requiresH264 ? "avc1" : nil
+            )
             qualityManager.setSelectedFormatForCurrentPreference()
             applyHLSHints = true
         } else {
@@ -1022,17 +1132,11 @@ extension PlaybackViewModel {
         }
 
         lastAttemptedStreamURL = effectiveURL
-        let isHLSManifest = label.contains("/HLS")
         // WebSafari HLS variant playlists are served from manifest.googlevideo.com and
         // signed for a browser WEB client. The CDN checks that the requesting UA matches
         // a web browser; sending the iOS YouTube UA returns 403. Use the Safari macOS UA
         // for WebSafari HLS, and Origin + Referer for all HLS (browser-style headers).
-        let hlsUA: String
-        if isHLSManifest && label.contains("WebSafari") {
-            hlsUA = InnerTubeClients.WebSafari.userAgent
-        } else {
-            hlsUA = "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)"
-        }
+        let hlsUA = hlsPolicy.userAgent
         var hlsHeaders: [String: String] = ["User-Agent": hlsUA]
         if isHLSManifest {
             hlsHeaders["Origin"] = "https://www.youtube.com"
@@ -1047,7 +1151,7 @@ extension PlaybackViewModel {
             // no HTTP protocol handler, so segment sub-requests inside HLS always
             // fail regardless of the io_open callback approach.
             let uaOpts: [String: Any] = ["AVURLAssetHTTPHeaderFieldsKey": hlsHeaders]
-            let asset = AVURLAsset(url: effectiveURL, options: uaOpts)
+            let asset = qualityManager.makeHLSAsset(url: effectiveURL, options: uaOpts)
             playerLog.notice("[\(label)] HLS via AVURLAsset (native stack) url=\(effectiveURL.lastPathComponent)")
             item = AVPlayerItem(asset: asset)
         } else {
@@ -1064,7 +1168,7 @@ extension PlaybackViewModel {
             item?.preferredForwardBufferDuration = 0
         }
         if applyHLSHints {
-            if settings.preferredQuality != .auto, let maxH = settings.preferredQuality.maxHeight {
+            if let maxH = hlsPolicy.cappedHeight(requested: effectiveQuality.maxHeight) {
                 item.preferredMaximumResolution = CGSize(width: CGFloat(maxH) * 4, height: CGFloat(maxH))
                 item.preferredPeakBitRate = peakBitRate(for: maxH)
                 playerLog.notice("[\(label)] HLS ABR hints: maxH=\(maxH)p peakBitRate=\(peakBitRate(for: maxH) / 1_000_000)Mbps (master URL preserved)")
@@ -1197,6 +1301,7 @@ extension PlaybackViewModel {
         switch clientParam {
         case "ANDROID_VR":   ua = InnerTubeClients.AndroidVR.userAgent
         case "ANDROID":      ua = InnerTubeClients.Android.userAgent
+        case "VISIONOS":     ua = InnerTubeClients.VisionOS.userAgent
         case "TVHTML5":      ua = InnerTubeClients.TV.userAgent
         case "MWEB":         ua = InnerTubeClients.MWEB.userAgent
         case "WEB_CREATOR":  ua = InnerTubeClients.Web.userAgent
@@ -2494,6 +2599,9 @@ extension PlaybackViewModel {
 
             case "android-vr":
                 info = try await api.fetchPlayerInfoAndroidVR(videoId: video.id)
+
+            case "visionos":
+                info = try await api.fetchPlayerInfoVisionOS(videoId: video.id)
 
             case "web-creator":
                 info = try await api.fetchPlayerInfoWebCreator(videoId: video.id)

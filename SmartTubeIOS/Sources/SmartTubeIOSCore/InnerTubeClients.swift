@@ -10,7 +10,7 @@ package enum InnerTubeClients {
     package enum Web {
         package static let name      = "WEB"
         package static let nameID    = "1"
-        package static let version   = "2.20260206.01.00"
+        package static let version   = "2.20260708.00.00"
         /// Browser UA used by the YouTube web client.
         package static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -18,7 +18,7 @@ package enum InnerTubeClients {
     package enum iOS {
         package static let name      = "iOS"
         package static let nameID    = "5"
-        package static let version   = "21.02.3"
+        package static let version   = "21.26.4"
         /// Returns the running iOS version formatted as "MAJOR_MINOR_PATCH" (or "MAJOR_MINOR"
         /// when the patch is 0). Dynamically derived from ProcessInfo so the User-Agent always
         /// reflects the actual device OS — prevents YouTube from rejecting requests sent from
@@ -41,7 +41,7 @@ package enum InnerTubeClients {
     package enum Android {
         package static let name            = "ANDROID"
         package static let nameID          = "3"
-        package static let version         = "21.02.35"
+        package static let version         = "21.26.364"
         package static let androidSdkVersion = 30  // Android 11
         package static let userAgent       = "com.google.android.youtube/\(version) (Linux; U; Android 11) gzip"
     }
@@ -58,6 +58,19 @@ package enum InnerTubeClients {
         package static let userAgent = "com.google.android.apps.youtube.vr.oculus/\(version) (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
     }
 
+    /// visionOS client — current yt-dlp's first-choice JS-less client.
+    /// Unlike Android/iOS/WEB, its current upstream policy does not require a GVS
+    /// PO token. It is useful on tvOS because both platforms use Apple media codecs.
+    package enum VisionOS {
+        package static let name      = "VISIONOS"
+        package static let nameID    = "101"
+        package static let version   = "1.02"
+        package static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+        /// Higher HLS tiers are currently VP9/AV1; tvOS AVFoundation needs the
+        /// H.264 ladder, which tops out at 1080p for this client.
+        package static let maximumHLSHeight = 1080
+    }
+
     /// Web Embedded Player client — the current YouTube iframe embedded player.
     /// Replaces the deprecated TVHTML5_SIMPLY_EMBEDDED_PLAYER (nameID=85) which was
     /// removed from yt-dlp in 2026 after YouTube blocked it with "no longer supported".
@@ -66,7 +79,7 @@ package enum InnerTubeClients {
     package enum TVEmbedded {
         package static let name    = "WEB_EMBEDDED_PLAYER"
         package static let nameID  = "56"
-        package static let version = "1.20260115.01.00"
+        package static let version = "2.20260708.00.00"
     }
 
     /// Mobile web client (YouTube m.youtube.com, iPad Safari).
@@ -78,7 +91,7 @@ package enum InnerTubeClients {
     package enum MWEB {
         package static let name      = "MWEB"
         package static let nameID    = "2"
-        package static let version   = "2.20260115.01.00"
+        package static let version   = "2.20260708.05.00"
         package static let userAgent = "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)"
     }
 
@@ -89,7 +102,7 @@ package enum InnerTubeClients {
     package enum WebCreator {
         package static let name    = "WEB_CREATOR"
         package static let nameID  = "62"
-        package static let version = "1.20240723.03.00"
+        package static let version = "1.20260708.06.00"
     }
 
     /// WEB client with macOS Safari UA — mirrors yt-dlp's `web_safari` client config
@@ -101,7 +114,7 @@ package enum InnerTubeClients {
     package enum WebSafari {
         package static let name      = "WEB"
         package static let nameID    = "1"
-        package static let version   = "2.20260114.08.00"
+        package static let version   = "2.20260708.00.00"
         package static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
     }
 
@@ -111,8 +124,8 @@ package enum InnerTubeClients {
         // Version 7.x (standard Cobalt TV client) — used for browse AND authenticated player.
         // Tested yt-dlp tv_downgraded 5.20260114 for player: returns HLS=false (same as 7.x),
         // and 5.x breaks the /browse home-feed endpoint (HTTP 400). No benefit to 5.x here.
-        package static let version   = "7.20260311.12.00"
-        package static let userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+        package static let version   = "7.20260707.07.00"
+        package static let userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
     }
 
     /// Maximum number of videos fetched per shelf/related-videos request.
