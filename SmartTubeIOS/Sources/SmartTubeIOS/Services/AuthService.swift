@@ -1,7 +1,9 @@
 import Foundation
 import Observation
 import os
+#if canImport(WebKit)
 import WebKit
+#endif
 import SmartTubeIOSCore
 
 let authLog = CrashlyticsLogger(category: "Auth")
@@ -264,11 +266,19 @@ public final class AuthService {
                 HTTPCookieStorage.shared.deleteCookie(cookie)
             }
         }
+        // WKWebsiteDataStore is only available where WebKit ships (iOS, macOS,
+        // visionOS, iPadOS). tvOS has no WebKit framework at all, so skip the
+        // WKWebView-side cookie wipe there — the URLSession/HTTPCookieStorage
+        // wipe above is the only one that exists.
+        #if canImport(WebKit)
         let dataStore = WKWebsiteDataStore.default()
         dataStore.removeData(ofTypes: [WKWebsiteDataTypeCookies], modifiedSince: Date(timeIntervalSince1970: 0)) {
             authLog.notice("[clearAllForTest] WKWebsiteDataStore cookies removed")
         }
         authLog.notice("[clearAllForTest] cleared in-memory + keychain + HTTPCookieStorage + WKWebsiteDataStore")
+        #else
+        authLog.notice("[clearAllForTest] cleared in-memory + keychain + HTTPCookieStorage (no WebKit on this platform)")
+        #endif
     }
 
     /// Returns a valid access token, refreshing if necessary.
