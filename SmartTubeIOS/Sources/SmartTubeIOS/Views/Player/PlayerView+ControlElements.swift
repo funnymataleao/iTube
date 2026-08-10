@@ -63,6 +63,7 @@ struct PlayerControlsOverlay: View {
                 .accessibilityIdentifier("player.backButton")
                 #if os(tvOS)
                 .buttonStyle(.plain)
+                .focusable(false)
                 .scaleEffect(highlightedControl == .back ? 1.5 : 1.0)
                 .shadow(color: highlightedControl == .back ? .white.opacity(0.85) : .clear, radius: 12)
                 .animation(.easeInOut(duration: 0.15), value: highlightedControl)
@@ -99,6 +100,7 @@ struct PlayerControlsOverlay: View {
                     }
                     #if os(tvOS)
                     .buttonStyle(.plain)
+                    .focusable(false)
                     .scaleEffect(highlightedControl == .channel ? 1.5 : 1.0)
                     .shadow(color: highlightedControl == .channel ? .white.opacity(0.85) : .clear, radius: 12)
                     .animation(.easeInOut(duration: 0.15), value: highlightedControl)
@@ -149,6 +151,7 @@ struct PlayerControlsOverlay: View {
                 .accessibilityIdentifier("player.moreButton")
                 #if os(tvOS)
                 .buttonStyle(.plain)
+                .focusable(false)
                 .scaleEffect(highlightedControl == .more ? 1.5 : 1.0)
                 .shadow(color: highlightedControl == .more ? .white.opacity(0.85) : .clear, radius: 12)
                 .animation(.easeInOut(duration: 0.15), value: highlightedControl)
