@@ -96,6 +96,8 @@ public struct PlayerView: View {
     @FocusState var qualityPickerFocused: Bool
     @FocusState var speedPickerFocused: Bool
     @FocusState var sleepTimerPickerFocused: Bool
+    @FocusState var captionPickerFocused: Bool
+    @FocusState var audioTrackPickerFocused: Bool
     @FocusState var skipToastButtonFocused: Bool
     #endif
 

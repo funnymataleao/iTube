@@ -4,10 +4,10 @@
 /// AVURLAssetHTTPHeaderFieldsKey does not reliably propagate User-Agent through
 /// CoreMedia's internal HLS stack — this resource loader fills that gap.
 
-#if canImport(WebKit)
 import AVFoundation
 import Foundation
 import os.log
+import SmartTubeIOSCore
 
 private let proxyScheme = "ytwebhls"
 private let proxyLog = Logger(subsystem: "com.void.smarttube.app", category: "HLSProxy")
@@ -58,17 +58,23 @@ final class YTHLSProxyLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecke
     /// This unlocks rqh=1-enforced HLS segments served via the WEB client (web_safari)
     /// when a valid minted BotGuard token is available but spc= is not.
     let poToken: String?
+    /// Optional compatibility filter applied to master manifests before URI rewriting.
+    let maximumVideoHeight: Int?
+    let requiredVideoCodec: String?
     private let lock = NSLock()
     private var activeTasks: [ObjectIdentifier: URLSessionDataTask] = [:]
 
     init(ua: String, nSolver: (unsolved: String, solved: String)? = nil,
          webViewCookies: [HTTPCookie] = [], selectedLanguageContentID: String? = nil,
-         poToken: String? = nil) {
+         poToken: String? = nil, maximumVideoHeight: Int? = nil,
+         requiredVideoCodec: String? = nil) {
         self.ua = ua
         self.nSolver = nSolver
         self.webViewCookies = webViewCookies
         self.selectedLanguageContentID = selectedLanguageContentID
         self.poToken = poToken
+        self.maximumVideoHeight = maximumVideoHeight
+        self.requiredVideoCodec = requiredVideoCodec
     }
 
     // MARK: AVAssetResourceLoaderDelegate
@@ -231,6 +237,16 @@ final class YTHLSProxyLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecke
         // Applying this synthesis to a master manifest converts variant/audio-group URLs into
         // fake segments → CoreMediaErrorDomain -12642. Skip synthesis for any master manifest.
         let isMasterManifest = text.contains("#EXT-X-STREAM-INF") || text.contains("#EXT-X-MEDIA:")
+        if isMasterManifest,
+           let maximumVideoHeight,
+           let requiredVideoCodec {
+            text = filterHLSMasterManifest(
+                text,
+                maximumHeight: maximumVideoHeight,
+                requiredVideoCodec: requiredVideoCodec
+            )
+            proxyLog.notice("[HLSProxy] filtered master to \(requiredVideoCodec, privacy: .public) <= \(maximumVideoHeight, privacy: .public)p")
+        }
         if !text.contains("#EXTINF") && !isMasterManifest {
             let rawLines = text.components(separatedBy: "\n")
             var fixedLines: [String] = []
@@ -422,4 +438,3 @@ final class YTHLSProxyLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecke
         return text
     }
 }
-#endif

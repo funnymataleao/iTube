@@ -250,7 +250,6 @@ extension PlayerView {
                 sponsorSkipToast
 
                 // Caption cue overlay — shown when a track is selected and a cue is active
-                #if !os(tvOS)
                 if let cue = vm.currentCaptionCue {
                     VStack(spacing: 0) {
                         Spacer()
@@ -264,7 +263,6 @@ extension PlayerView {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                 }
-                #endif
 
                 // End cards — shown in the final seconds of a video.
                 // Displayed regardless of controls visibility, matching official YouTube behaviour.
@@ -452,6 +450,15 @@ extension PlayerView {
         }
         .onChange(of: showCaptionPicker) { _, visible in
             swipeLog.notice("[tv] showCaptionPicker changed → \(visible)")
+            if visible {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    captionPickerFocused = true
+                    swipeLog.notice("[tv] captionPickerFocused set → true")
+                }
+            } else {
+                captionPickerFocused = false
+            }
         }
     }
 
@@ -460,6 +467,15 @@ extension PlayerView {
         tvosPlayerOverlayModifiers
         .onChange(of: showAudioTrackPicker) { _, visible in
             swipeLog.notice("[tv] showAudioTrackPicker changed → \(visible)")
+            if visible {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    audioTrackPickerFocused = true
+                    swipeLog.notice("[tv] audioTrackPickerFocused set → true")
+                }
+            } else {
+                audioTrackPickerFocused = false
+            }
         }
         .onChange(of: vm.currentToastSegment) { _, segment in
             swipeLog.notice("[tv] currentToastSegment changed → \(segment == nil ? "nil" : segment!.category.rawValue)")
