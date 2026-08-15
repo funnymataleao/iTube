@@ -121,9 +121,13 @@ final class TVHomeFeedUITests: XCTestCase {
                           "Missing personalized Home shelf: \(title)")
         }
 
-        // Top tab bar → first video in the Recommended shelf.
+        // Top tab bar → first video in the first personalized shelf.
         remote.press(.down)
         Thread.sleep(forTimeInterval: 0.6)
+        let focusedShelf = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        focusedShelf.name = "Home shelf focus without clipping"
+        focusedShelf.lifetime = .keepAlways
+        add(focusedShelf)
         remote.press(.select)
 
         let playerTitle = element("player.titleLabel")

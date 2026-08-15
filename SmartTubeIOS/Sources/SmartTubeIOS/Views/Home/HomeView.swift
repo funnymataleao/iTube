@@ -366,19 +366,13 @@ public struct HomeView: View {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, group in
-                        VStack(alignment: .leading, spacing: 8) {
-                            let title = group.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Recommended"
-                            HStack(spacing: 16) {
-                                Image(systemName: personalTVShelfSymbol(for: title))
-                                    .font(.title2.weight(.semibold))
-                                    .frame(width: 44)
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let title = group.title {
                                 Text(title)
-                                    .font(.title2.weight(.semibold))
+                                    .font(.headline.weight(.semibold))
+                                    .padding(.horizontal, 64)
+                                    .accessibilityAddTraits(.isHeader)
                             }
-                            .padding(.horizontal, 48)
-                            .accessibilityAddTraits(.isHeader)
 
                             VideoRowSection(
                                 videos: group.videos,
@@ -411,24 +405,43 @@ public struct HomeView: View {
     }
 
     /// Keep Google's personalized order, with "New to you" promoted to the
-    /// second carousel as requested.
+    /// first carousel as requested. Structural/duplicate "Home" labels are
+    /// removed; all remaining topic order comes directly from Google.
     private func orderedPersonalTVRows(_ rows: [VideoGroup]) -> [VideoGroup] {
-        var result = rows
+        var result: [VideoGroup] = []
 
-        if let recommendedIndex = result.firstIndex(where: {
-            personalTVTitle($0, containsAny: ["recommended", "for you", "рекоменд"])
-        }), recommendedIndex != 0 {
-            result.insert(result.remove(at: recommendedIndex), at: 0)
+        for row in rows {
+            var copy = row
+            let rawTitle = row.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowerTitle = rawTitle?.lowercased()
+            copy.title = (lowerTitle == "home" || lowerTitle == "главная" || rawTitle?.isEmpty == true)
+                ? nil
+                : rawTitle
+
+            if let title = copy.title,
+               let existingIndex = result.firstIndex(where: {
+                   $0.title?.localizedCaseInsensitiveCompare(title) == .orderedSame
+               }) {
+                var seen = Set(result[existingIndex].videos.map(\.id))
+                result[existingIndex].videos.append(contentsOf: copy.videos.filter { seen.insert($0.id).inserted })
+                result[existingIndex].nextPageToken = copy.nextPageToken ?? result[existingIndex].nextPageToken
+            } else if copy.title == nil, !result.isEmpty {
+                var seen = Set(result[result.count - 1].videos.map(\.id))
+                result[result.count - 1].videos.append(contentsOf: copy.videos.filter { seen.insert($0.id).inserted })
+                result[result.count - 1].nextPageToken = copy.nextPageToken ?? result[result.count - 1].nextPageToken
+            } else {
+                result.append(copy)
+            }
         }
 
         if let newIndex = result.firstIndex(where: {
             personalTVTitle($0, containsAny: [
-                "new to you", "new for you", "recently published",
-                "новое для вас", "недавно опублик"
+                "new to you", "new for you", "new for me", "recently published",
+                "новое для вас", "новое для меня", "недавно опублик"
             ])
         }) {
             let shelf = result.remove(at: newIndex)
-            result.insert(shelf, at: min(1, result.count))
+            result.insert(shelf, at: 0)
         }
 
         return result
@@ -439,19 +452,6 @@ public struct HomeView: View {
         return needles.contains { title.contains($0) }
     }
 
-    private func personalTVShelfSymbol(for title: String) -> String {
-        let value = title.lowercased()
-        if value.contains("new to you") || value.contains("new for you") || value.contains("новое для вас") {
-            return "sparkles"
-        }
-        if value.contains("game") || value.contains("игр") { return "gamecontroller.fill" }
-        if value.contains("space") || value.contains("космос") { return "globe.americas.fill" }
-        if value.contains("physic") || value.contains("физик") { return "atom" }
-        if value.contains("electronic") || value.contains("электроник") { return "cpu.fill" }
-        if value.contains("travel") || value.contains("tourism") || value.contains("туризм") { return "airplane" }
-        if value.contains("news") || value.contains("новост") { return "newspaper.fill" }
-        return "play.rectangle.fill"
-    }
     #endif
 
     // MARK: - Section feed  (non-Home chips)

@@ -325,10 +325,11 @@ struct VideoRowSection: View {
                     #endif
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 64)
+            .padding(.vertical, 28)
         }
         #if os(tvOS)
+        .scrollClipDisabled()
         .focusSection()
         #endif
     }

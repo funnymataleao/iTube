@@ -49,7 +49,13 @@ extension InnerTubeAPI {
             }
             var videos: [Video] = []
             if let dict = obj as? [String: Any] {
-                if let vr = dict["videoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
+                if let tile = dict["tileRenderer"] as? [String: Any], let v = parseTileRenderer(tile) {
+                    videos.append(v)
+                } else if let vr = dict["videoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
+                    videos.append(v)
+                } else if let vr = dict["gridVideoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
+                    videos.append(v)
+                } else if let vr = dict["compactVideoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
                     videos.append(v)
                 } else if let ri = dict["richItemRenderer"] as? [String: Any],
                           let content = ri["content"] as? [String: Any] {
@@ -84,14 +90,83 @@ extension InnerTubeAPI {
             return videos
         }
 
+        func rendererTitle(_ renderer: [String: Any]) -> String? {
+            if let title = renderer["title"] as? String {
+                return title.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let title = renderer["title"] as? [String: Any], let text = extractText(title) {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let header = renderer["header"] as? [String: Any] {
+                if let text = extractSectionTitle(from: header) {
+                    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                for value in header.values {
+                    if let value = value as? [String: Any],
+                       let title = value["title"] as? [String: Any],
+                       let text = extractText(title) {
+                        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+            }
+            return nil
+        }
+
+        func displayShelfTitle(_ rawTitle: String?) -> String? {
+            guard let title = rawTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty else { return nil }
+            // TVHTML5 labels the structural root shelf "Home". It is not a
+            // personalized shelf title and must never be shown as a feed heading.
+            let structuralTitles = ["home", "главная"]
+            return structuralTitles.contains(title.lowercased()) ? nil : title
+        }
+
+        func findContinuation(in obj: Any, depth: Int = 0) -> String? {
+            guard depth < 50 else { return nil }
+            if let dict = obj as? [String: Any] {
+                if let token = (dict["continuationCommand"] as? [String: Any])?["token"] as? String {
+                    return token
+                }
+                if let token = (dict["nextContinuationData"] as? [String: Any])?["continuation"] as? String {
+                    return token
+                }
+                for value in dict.values {
+                    if let token = findContinuation(in: value, depth: depth + 1) { return token }
+                }
+            } else if let array = obj as? [Any] {
+                for value in array {
+                    if let token = findContinuation(in: value, depth: depth + 1) { return token }
+                }
+            }
+            return nil
+        }
+
         func walk(_ obj: Any, depth: Int = 0) {
             guard depth < 50 else {
                 tubeLog.warning("parseHomeSections: walk depth limit (50) reached — skipping subtree")
                 return
             }
             if let dict = obj as? [String: Any] {
+                // Authenticated TVHTML5 Home exposes its personalized categories as
+                // secondary-navigation tabs. Each tab is a real Google-ranked shelf;
+                // the nested shelfRenderer title is often only the structural "Home".
+                if let navigation = dict["tvSecondaryNavSectionRenderer"] as? [String: Any],
+                   let tabs = navigation["tabs"] as? [[String: Any]] {
+                    if let token = findContinuation(in: navigation) { continuationToken = token }
+                    for tab in tabs {
+                        guard let renderer = tab["tabRenderer"] as? [String: Any] else { continue }
+                        let videos = walkShelfContents(renderer["content"] as Any)
+                        guard !videos.isEmpty else { continue }
+                        rows.append(VideoGroup(
+                            title: displayShelfTitle(rendererTitle(renderer)),
+                            videos: videos,
+                            layout: .row
+                        ))
+                    }
+                    return
+                }
                 if let shelf = dict["richShelfRenderer"] as? [String: Any] {
-                    let title = (shelf["title"] as? [String: Any]).flatMap { extractText($0) }
+                    let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["contents"] as Any)
                     if !videos.isEmpty {
                         rows.append(VideoGroup(title: title, videos: videos, layout: .row))
@@ -99,11 +174,20 @@ extension InnerTubeAPI {
                     return
                 }
                 if let shelf = dict["reelShelfRenderer"] as? [String: Any] {
-                    let title = (shelf["title"] as? [String: Any]).flatMap { extractText($0) }
+                    let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["items"] as Any)
                     if !videos.isEmpty {
                         rows.append(VideoGroup(title: title, videos: videos, layout: .row))
                     }
+                    return
+                }
+                if let shelf = dict["shelfRenderer"] as? [String: Any] {
+                    let title = displayShelfTitle(rendererTitle(shelf))
+                    let videos = walkShelfContents(shelf["content"] as Any)
+                    if !videos.isEmpty {
+                        rows.append(VideoGroup(title: title, videos: videos, layout: .row))
+                    }
+                    if let token = findContinuation(in: shelf) { continuationToken = token }
                     return
                 }
                 if let contItem = dict["continuationItemRenderer"] as? [String: Any],
@@ -1128,4 +1212,3 @@ extension InnerTubeAPI {
         )
     }
 }
-

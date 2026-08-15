@@ -521,6 +521,102 @@ struct HistoryParsingTests {
 @Suite("Home Row Parsing")
 struct HomeRowParsingTests {
 
+    @Test("TVHTML5 personalized tabs become Google-titled Home shelves")
+    func tvHTML5PersonalizedTabsProduceNamedRows() async {
+        func tile(_ id: String, _ title: String) -> [String: Any] {
+            [
+                "tileRenderer": [
+                    "contentType": "TILE_CONTENT_TYPE_VIDEO",
+                    "contentId": id,
+                    "onSelectCommand": ["watchEndpoint": ["videoId": id]],
+                    "metadata": [
+                        "tileMetadataRenderer": [
+                            "title": ["simpleText": title],
+                            "lines": []
+                        ]
+                    ],
+                    "header": [
+                        "tileHeaderRenderer": [
+                            "thumbnail": [
+                                "thumbnails": [["url": "https://i.ytimg.com/vi/\(id)/hqdefault.jpg"]]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        }
+
+        func tab(_ title: String, _ id: String) -> [String: Any] {
+            [
+                "tabRenderer": [
+                    "title": ["simpleText": title],
+                    "content": [
+                        "tvSurfaceContentRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "shelfRenderer": [
+                                            "title": ["simpleText": "Home"],
+                                            "content": ["horizontalListRenderer": ["items": [tile(id, title)]]]
+                                        ]
+                                    ]]
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        }
+
+        let response: [String: Any] = [
+            "contents": [
+                "tvBrowseRenderer": [
+                    "content": [
+                        "tvSecondaryNavRenderer": [
+                            "sections": [[
+                                "tvSecondaryNavSectionRenderer": [
+                                    "tabs": [
+                                        tab("New to you", "newVideo"),
+                                        tab("Gaming", "gamingVideo")
+                                    ]
+                                ]
+                            ]]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let rows = await InnerTubeAPI().parseVideoGroupRowsForTesting(response)
+        #expect(rows.map(\.title) == ["New to you", "Gaming"])
+        #expect(rows.map { $0.videos.first?.id } == ["newVideo", "gamingVideo"])
+    }
+
+    @Test("Structural Home shelf title is never exposed as a heading")
+    func structuralHomeTitleIsSuppressed() async {
+        let response: [String: Any] = [
+            "contents": [[
+                "shelfRenderer": [
+                    "title": ["simpleText": "Home"],
+                    "content": [
+                        "horizontalListRenderer": [
+                            "items": [[
+                                "videoRenderer": [
+                                    "videoId": "homeVideo",
+                                    "title": ["simpleText": "Home video"]
+                                ]
+                            ]]
+                        ]
+                    ]
+                ]
+            ]]
+        ]
+
+        let rows = await InnerTubeAPI().parseVideoGroupRowsForTesting(response)
+        #expect(rows.count == 1)
+        #expect(rows.first?.title == nil)
+    }
+
     // reelShelfRenderer at the top level of the home feed response should produce
     // a VideoGroup containing isShort == true videos.
     @Test func reelShelfRendererProducesShorts() async {

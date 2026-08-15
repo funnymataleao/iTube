@@ -315,8 +315,8 @@ public struct VideoCardView: View {
                 }
                 #endif
             }
-            .shadow(color: isFocused ? .white.opacity(0.9) : .clear, radius: 18, x: 0, y: 0)
-            .scaleEffect(isFocused ? 1.08 : 1.0)
+            .shadow(color: isFocused ? .white.opacity(0.85) : .clear, radius: 16, x: 0, y: 0)
+            .scaleEffect(isFocused ? 1.05 : 1.0)
             .zIndex(isFocused ? 1 : 0)
             .animation(.easeInOut(duration: 0.15), value: isFocused)
             .alert(item: $watchLaterAlert) { item in
@@ -343,7 +343,7 @@ public struct VideoCardView: View {
                         watchProgressBar(progress)
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(alignment: .bottomTrailing) {
                     let dur = video.formattedDuration
                     if !dur.isEmpty { durationBadge(dur) }
@@ -357,11 +357,19 @@ public struct VideoCardView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayTitle)
+                    #if os(tvOS)
+                    .font(.footnote.weight(.medium))
+                    #else
                     .font(.subheadline.weight(.medium))
+                    #endif
                     .lineLimit(2, reservesSpace: true)
                     .accessibilityIdentifier("video.card.title")
                 Text(video.channelTitle)
+                    #if os(tvOS)
+                    .font(.caption2)
+                    #else
                     .font(.caption)
+                    #endif
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .onTapGesture {

@@ -1,42 +1,52 @@
-# tvOS Home shelf design QA
+# tvOS personalized Home shelf design QA
 
 ## Target and implementation
 
-- Reference: `/var/folders/h4/rb7g5dgj5hl8q7hqzgjhbjkw0000gn/T/codex-clipboard-c2c51502-4f97-4268-b828-4b7da62aeebd.png`
-- Implementation screenshot: `/tmp/personaltube-shelves-v3.png`
-- Side-by-side comparison: `/tmp/personaltube-design-comparison-v3.png`
+- Reference: `/var/folders/h4/rb7g5dgj5hl8q7hqzgjhbjkw0000gn/T/codex-clipboard-a9ce49f4-23df-4d4a-b6b3-ca4f1ef304c7.png`
+- Implementation screenshot: `/tmp/personaltube-shelves-v4.png`
+- Focus-state screenshot: `/tmp/personaltube-shelves-v4-attachments/B5B81F42-77E1-4E65-9614-BC7236440EEF.png`
+- Side-by-side comparison: `/tmp/personaltube-design-comparison-v4.png`
 - Viewport: Apple TV 4K (3rd generation), tvOS 27 simulator
 - Reference dimensions: 3840 × 2160 px
 - Implementation dimensions: 3840 × 2160 px
-- State: signed-in Home feed with deterministic real YouTube thumbnails
+- State: signed-in Home feed with deterministic real YouTube thumbnails and a
+  focused first card
 
 ## Visual comparison
 
-The full-screen comparison is sufficient for this change because the shelf headings,
-card size, horizontal density, and the start of the second shelf are all readable at
-the captured resolution. A separate crop would not expose additional detail.
+The full-screen comparison shows the repeated structural `Home` titles, heading
+icons, typography, card radius, and carousel spacing. The separate focus-state
+screenshot verifies that the focused card's scale and glow are not clipped by the
+horizontal scroll container.
 
-### Pass 1 findings
+### Findings and corrections
 
-- P2: The shelf heading was larger than the reference. Fixed by using the native
-  `title2` text style with semibold weight.
-- P2: The row was too dense compared with the reference. Fixed by increasing the
-  tvOS shelf card width from 520 to 600 points.
+- P1: Structural `Home`/`Главная` shelf titles were repeated between personalized
+  groups. Fixed by reading the authenticated Google secondary-navigation tab title
+  for each group and suppressing structural container titles.
+- P2: Decorative icons were inserted into every shelf heading. Removed; headings
+  now contain only Google's text.
+- P2: Shelf and card typography was oversized. Reduced to native `headline`,
+  `footnote`, and `caption2` styles with semantic weights.
+- P2: Focus scale and glow were clipped by the horizontal scroll container. Fixed
+  with unclipped scroll content, 64-point horizontal and 28-point vertical focus
+  breathing room, and a 1.05 focus scale.
+- P3: Thumbnail corners were too tight. Increased to an 18-point continuous radius.
 
 ### Final pass
 
 - Hierarchy: passed. Each topic is a heading followed by its own horizontal video
   carousel; there is no topic chip/tab strip.
-- Ordering: passed. Recommended content is first, “New to you” is promoted to the
-  second shelf, and remaining Google-provided topics retain their personalized order.
+- Ordering: passed. “New to you” is promoted to the first shelf, while every other
+  Google-provided topic retains its personalized server order.
 - Typography: passed. System San Francisco styles are used and headings remain
   readable at TV distance.
-- Spacing and focus: passed. Shelves have consistent leading alignment and preserve
-  native tvOS focus behavior.
+- Spacing and focus: passed. Shelves have consistent leading alignment, preserve
+  native tvOS focus behavior, and the focused card glow remains fully visible.
 - Assets and image quality: passed. Video thumbnails come from the live content
-  source; shelf icons use SF Symbols rather than fabricated assets.
+  source and shelf headings contain no decorative assets.
 - Accessibility: passed for the changed structure. Shelf titles are exposed as
-  headers, decorative symbols are hidden, and focusable cards remain reachable.
+  headers and focusable cards remain reachable.
 - Localization: passed for layout. Server-provided shelf titles can grow without
   changing the carousel structure.
 - Existing primary app navigation remains a top system tab bar; changing it to the
