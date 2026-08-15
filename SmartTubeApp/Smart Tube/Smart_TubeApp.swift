@@ -1,5 +1,4 @@
 import SwiftUI
-import FirebaseCore
 import SmartTubeIOS
 import SmartTubeIOSCore
 
@@ -8,8 +7,6 @@ import SmartTubeIOSCore
 /// the user reads a code on screen and activates on their phone at yt.be/activate.
 @main
 struct SmartTubeTVApp: App {
-    // Declared without default values so that init() can call FirebaseApp.configure()
-    // before any of these objects are instantiated.
     @State private var api: InnerTubeAPI
     @State private var authService: AuthService
     @State private var browseViewModel: BrowseViewModel
@@ -21,8 +18,16 @@ struct SmartTubeTVApp: App {
     @State private var cardDownloadService: VideoDownloadService
 
     init() {
-        FirebaseApp.configure()
         let settingsStore = SettingsStore()
+        if !UserDefaults.standard.bool(forKey: "personalTube.tvOS.didConfigure") {
+            settingsStore.settings.hideShorts = true
+            settingsStore.settings.enabledSections = [.home, .subscriptions, .history]
+            settingsStore.settings.sponsorBlockActions[.sponsor] = .skip
+            settingsStore.settings.sponsorBlockActions[.selfPromo] = .skip
+            settingsStore.settings.sponsorBlockActions[.intro] = .skip
+            settingsStore.settings.sponsorBlockActions[.outro] = .skip
+            UserDefaults.standard.set(true, forKey: "personalTube.tvOS.didConfigure")
+        }
         let poTokenProvider: (any PoTokenProvider)? = {
             if let url = settingsStore.settings.poTokenServiceURL {
                 return ServerPoTokenProvider(serviceURL: url)

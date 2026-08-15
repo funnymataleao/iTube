@@ -105,6 +105,7 @@ public struct SignInView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("signin.loading")
     }
 
     private func tvActivationView(info: AuthService.ActivationInfo) -> some View {
@@ -131,6 +132,7 @@ public struct SignInView: View {
                     Text(info.verificationURL.absoluteString)
                         .font(.title3).fontWeight(.semibold)
                         .foregroundStyle(.blue)
+                        .accessibilityIdentifier("signin.verificationURL")
                 }
 
                 Text(info.userCode)
@@ -140,6 +142,7 @@ public struct SignInView: View {
                     .padding(.horizontal, 32)
                     .background(Color.secondary.opacity(0.15))
                     .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .accessibilityIdentifier("signin.activationCode")
 
                 CountdownView(expiresAt: info.expiresAt) {
                     Task { await auth.beginSignIn() }

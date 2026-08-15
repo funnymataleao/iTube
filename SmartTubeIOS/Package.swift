@@ -38,7 +38,11 @@ let package = Package(
             name: "SmartTubeIOS",
             dependencies: [
                 "SmartTubeIOSCore",
-                .product(name: "FirebaseCrashlytics", package: "firebase-ios-sdk"),
+                .product(
+                    name: "FirebaseCrashlytics",
+                    package: "firebase-ios-sdk",
+                    condition: .when(platforms: [.iOS, .macOS])
+                ),
             ],
             path: "Sources/SmartTubeIOS",
             resources: [

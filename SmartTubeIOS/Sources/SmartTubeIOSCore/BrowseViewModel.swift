@@ -161,17 +161,31 @@ public final class BrowseViewModel {
             enrichTask?.cancel()
             enrichTask = nil
         }
-        // UI-testing synchronous inject: when `--uitesting-inject-recommended-ids=<ids>`
-        // is present and the target section is `.recommended`, populate videoGroups
-        // immediately on the main actor without an async fetch. This avoids race
-        // conditions between the Task scheduling / cancellation and the view update.
-        if target.type == .recommended,
-           let arg = ProcessInfo.processInfo.arguments.first(where: {
+        // UI-testing synchronous inject. For Home the IDs are split into named
+        // horizontal shelves, which lets tvOS tests exercise the real focus and
+        // player navigation without depending on a simulator Google session.
+        if let arg = ProcessInfo.processInfo.arguments.first(where: {
                $0.hasPrefix("--uitesting-inject-recommended-ids=")
            }) {
             let raw = String(arg.dropFirst("--uitesting-inject-recommended-ids=".count))
             let ids = raw.split(separator: ",").map(String.init).filter { !$0.isEmpty }
-            if !ids.isEmpty {
+            if !ids.isEmpty, target.type == .home {
+                isAuthRequired = false
+                isLoading = false
+                let titles = ["For you", "News for you", "Science & Space"]
+                videoGroups = titles.enumerated().map { rowIndex, title in
+                    let videos = ids.map { id in
+                        Video(
+                            id: id,
+                            title: "Test video \(id)",
+                            channelTitle: "Test Channel"
+                        )
+                    }
+                    return VideoGroup(title: title, videos: videos, layout: .row)
+                }
+                browseLog.notice("UI-testing inject: populated \(titles.count) Home shelves")
+                return
+            } else if !ids.isEmpty, target.type == .recommended {
                 isAuthRequired = false
                 recommendedUsesSearchFallback = false
                 isLoading = false

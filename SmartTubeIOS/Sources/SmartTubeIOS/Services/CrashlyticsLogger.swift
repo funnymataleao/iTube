@@ -1,6 +1,8 @@
 import Foundation
 import os
+#if !os(tvOS)
 import FirebaseCrashlytics
+#endif
 import SmartTubeIOSCore
 
 /// Logs to `os.Logger` and forwards `.notice` and `.error` entries to Firebase
@@ -15,7 +17,9 @@ struct CrashlyticsLogger: Sendable {
     static let sessionReportID: String = {
         let raw = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let id = String(raw.prefix(8)).uppercased()
+#if !os(tvOS)
         Crashlytics.crashlytics().setCustomValue(id, forKey: "report_id")
+#endif
         return id
     }()
     private let logger: Logger
@@ -29,13 +33,17 @@ struct CrashlyticsLogger: Sendable {
     func notice(_ message: @autoclosure () -> String) {
         let msg = message()
         logger.notice("\(msg, privacy: .public)")
+#if !os(tvOS)
         Crashlytics.crashlytics().log("[\(category)] \(msg)")
+#endif
     }
 
     func error(_ message: @autoclosure () -> String) {
         let msg = message()
         logger.error("\(msg, privacy: .public)")
+#if !os(tvOS)
         Crashlytics.crashlytics().log("[ERR][\(category)] \(msg)")
+#endif
     }
 
     func debug(_ message: @autoclosure () -> String) {
@@ -51,21 +59,25 @@ struct CrashlyticsLogger: Sendable {
         let nsError = error as NSError
         let msg = "[\(category)] \(nsError.domain)(\(nsError.code)): \(nsError.localizedDescription)"
         logger.error("\(msg, privacy: .public)")
+#if !os(tvOS)
         let crashlytics = Crashlytics.crashlytics()
         crashlytics.log(msg)
         for (key, value) in userInfo {
             crashlytics.setCustomValue(value, forKey: key)
         }
         crashlytics.record(error: error)
+#endif
     }
 
     /// Stamps the video currently being loaded onto Crashlytics' persistent custom keys.
     /// Called once per `load(video:)` so that both crashes and non-fatals show which
     /// video was active at the time of the failure.
     static func setVideoContext(id: String, title: String) {
+#if !os(tvOS)
         let crashlytics = Crashlytics.crashlytics()
         crashlytics.setCustomValue(id, forKey: "active_video_id")
         crashlytics.setCustomValue(title.prefix(120).description, forKey: "active_video_title")
+#endif
     }
 
     /// Stamps the video the user *intended* to play onto Crashlytics' persistent custom keys.
@@ -74,10 +86,12 @@ struct CrashlyticsLogger: Sendable {
     /// Comparing `intended_video_id` with `active_video_id` in a report reveals whether
     /// the wrong video was loaded (prefetch race / wrong-card tap / id mismatch).
     static func setIntendedVideo(id: String, title: String) {
+#if !os(tvOS)
         let crashlytics = Crashlytics.crashlytics()
         crashlytics.setCustomValue(id, forKey: "intended_video_id")
         crashlytics.setCustomValue(title.prefix(120).description, forKey: "intended_video_title")
         crashlytics.setCustomValue(ISO8601DateFormatter().string(from: Date()), forKey: "intended_video_tap_time")
+#endif
     }
 
     /// Records a user-triggered diagnostic non-fatal event in Crashlytics.
@@ -87,6 +101,7 @@ struct CrashlyticsLogger: Sendable {
     /// debug overlay (two-finger tap in the player) so reports can be correlated
     /// with user-provided IDs from support conversations.
     static func sendDiagnosticReport() {
+#if !os(tvOS)
         let crashlytics = Crashlytics.crashlytics()
         crashlytics.setCustomValue(sessionReportID, forKey: "report_id")
         crashlytics.log("[Diagnostic] User-requested diagnostic report — report_id=\(sessionReportID). Tip: two-finger tap the player to open the debug overlay and confirm this ID before sending.")
@@ -96,6 +111,7 @@ struct CrashlyticsLogger: Sendable {
             userInfo: [NSLocalizedDescriptionKey: "User-requested diagnostic report (ID: \(sessionReportID))"]
         )
         crashlytics.record(error: error)
+#endif
     }
 
     /// Records a non-fatal Crashlytics event when time-to-first-frame exceeds 4 seconds.
@@ -109,6 +125,7 @@ struct CrashlyticsLogger: Sendable {
         hasError: Bool,
         errorDescription: String? = nil
     ) {
+#if !os(tvOS)
         let crashlytics = Crashlytics.crashlytics()
         crashlytics.setCustomValue(videoId,    forKey: "slow_load_video_id")
         crashlytics.setCustomValue(elapsedMs,  forKey: "slow_load_ttff_ms")
@@ -123,6 +140,7 @@ struct CrashlyticsLogger: Sendable {
             code: 4001,
             userInfo: [NSLocalizedDescriptionKey: "Slow video load: \(elapsedMs)ms (\(streamType))"]
         ))
+#endif
     }
 
     /// Automatically records a diagnostic report when playback fails and the error is
@@ -132,6 +150,7 @@ struct CrashlyticsLogger: Sendable {
     /// Custom keys set by `recordNonFatal` (stream_url, has_retried, etc.) are already
     /// stamped on the Crashlytics instance and are automatically attached to this event.
     static func sendAutoPlaybackDiagnostic() {
+#if !os(tvOS)
         let crashlytics = Crashlytics.crashlytics()
         crashlytics.log("[AutoDiagnostic] Playback failure — see custom keys and session breadcrumbs.")
         crashlytics.setCustomValue("auto", forKey: "trigger")
@@ -140,6 +159,7 @@ struct CrashlyticsLogger: Sendable {
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Playback failure — see session breadcrumbs"]
         ))
+#endif
     }
 
     /// Records a non-fatal Crashlytics event when the video that reached readyToPlay
@@ -154,6 +174,7 @@ struct CrashlyticsLogger: Sendable {
         activeId: String,
         activeTitle: String
     ) {
+#if !os(tvOS)
         let crashlytics = Crashlytics.crashlytics()
         crashlytics.setCustomValue(intendedId,    forKey: "wv_intended_id")
         crashlytics.setCustomValue(intendedTitle, forKey: "wv_intended_title")
@@ -167,5 +188,9 @@ struct CrashlyticsLogger: Sendable {
             code: 2,
             userInfo: [NSLocalizedDescriptionKey: "Wrong video at readyToPlay: intended=\(intendedId) active=\(activeId)"]
         ))
+#else
+        let msg = "[WrongVideo] intended=\(intendedId) (\(intendedTitle.prefix(60))) active=\(activeId) (\(activeTitle.prefix(60)))"
+        Logger(subsystem: appSubsystem, category: "WrongVideo").error("\(msg, privacy: .public)")
+#endif
     }
 }

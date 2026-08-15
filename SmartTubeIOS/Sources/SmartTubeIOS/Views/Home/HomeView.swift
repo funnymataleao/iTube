@@ -3,12 +3,10 @@ import SmartTubeIOSCore
 
 // MARK: - HomeView
 //
-// YouTube-style home tab.  A horizontal chip bar at the top lets the user
-// switch between every available section:
-//   • "Home"  chip  → multi-shelf overview (Subscriptions row,
-//                      Recommended row) driven by HomeViewModel.
-//   • Any other chip → full-screen video feed for that section driven by a
-//                      dedicated BrowseViewModel instance.
+// YouTube-style home tab. A horizontal chip bar at the top switches between
+// discovery feeds. On tvOS, Home preserves the personalised shelf structure
+// returned by YouTube so Siri Remote navigation is vertical between shelves
+// and horizontal between videos inside a shelf.
 
 public struct HomeView: View {
     @State private var homeVM: HomeViewModel
@@ -46,6 +44,12 @@ public struct HomeView: View {
     @FocusState private var focusedSection: BrowseSection?
     #endif
     private var visibleSections: [BrowseSection] {
+        #if os(tvOS)
+        // Subscriptions and History have dedicated top-level tabs on tvOS. Keep
+        // the Home chip bar focused on discovery, matching the living-room flow.
+        return [.home, .gaming, .news, .live, .sports, .music]
+            .compactMap { type in BrowseSection.allSections.first { $0.type == type } }
+        #else
         let types = store.settings.enabledSections
         var all: [BrowseSection] = types.isEmpty
             ? BrowseSection.defaultSections
@@ -60,6 +64,7 @@ public struct HomeView: View {
             return all.filter { $0.type != .shorts }
         }
         return all
+        #endif
     }
 
     public init(api: InnerTubeAPI) {
@@ -72,9 +77,7 @@ public struct HomeView: View {
     public var body: some View {
         VStack(spacing: 0) {
             chipBar
-            #if !os(tvOS)
             Divider()
-            #endif
             contentArea
                 #if !os(iOS)
                 .navigationDestination(item: $selectedVideo) { video in
@@ -121,15 +124,23 @@ public struct HomeView: View {
             }
         }
         .task(id: auth.accessToken) {
-            await homeVM.updateAuthToken(auth.accessToken)
             await sectionVM.updateAuthToken(auth.accessToken)
+            #if !os(tvOS)
+            await homeVM.updateAuthToken(auth.accessToken)
+            #endif
         }
         .task(id: selectedSection) {
             // Reset auto-retry flags when switching sections to prevent stale
             // triggers from a previous section firing on the new section's content.
             needsMoreShorts = false
             needsMoreNonShorts = false
-            if selectedSection.type == .playlists {
+            if selectedSection.type == .home {
+                #if os(tvOS)
+                if sectionVM.videoGroups.isEmpty && !sectionVM.isLoading {
+                    sectionVM.loadContent(for: selectedSection, source: "tvHome.appear")
+                }
+                #endif
+            } else if selectedSection.type == .playlists {
                 queueVideosCount = await CurrentQueueStore.shared.videos.count
             } else if selectedSection.type != .home {
                 // Safety net: if sectionVM somehow fell out of sync with selectedSection
@@ -285,6 +296,9 @@ public struct HomeView: View {
     // MARK: - Home shelves  (unified interleaved feed)
 
     private var homeShelves: some View {
+        #if os(tvOS)
+        personalTVHomeShelves
+        #else
         Group {
             if homeVM.isLoadingAny && homeVM.mergedVideos.isEmpty {
                 ProgressView()
@@ -327,7 +341,70 @@ public struct HomeView: View {
                 }
             }
         }
+        #endif
     }
+
+    #if os(tvOS)
+    /// Personalized Home as YouTube-provided horizontal shelves. Shelf titles
+    /// and ordering come directly from FEwhat_to_watch; promotional/ad renderers
+    /// have already been removed by the core parser.
+    @ViewBuilder
+    private var personalTVHomeShelves: some View {
+        let paginationTrigger = sectionVM.videoGroups.last?.videos.last
+        let rows = sectionVM.videoGroups.compactMap { group -> VideoGroup? in
+            var copy = group
+            copy.videos = group.videos.filter { video in
+                (!store.settings.hideShorts || !video.isShort)
+                    && (!store.settings.hideLiveShorts || !(video.isLive && video.isShort))
+                    && (!store.settings.hideVideoPremieres || !video.isUpcoming)
+            }
+            return copy.videos.isEmpty ? nil : copy
+        }
+
+        if sectionVM.isLoading && rows.isEmpty {
+            ProgressView("Loading recommendations…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if rows.isEmpty {
+            feedEmptyState
+        } else {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, group in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(group.title.flatMap { $0.isEmpty ? nil : $0 } ?? "For you")
+                                .font(.title2.weight(.semibold))
+                                .padding(.horizontal, 48)
+                                .accessibilityAddTraits(.isHeader)
+
+                            VideoRowSection(
+                                videos: group.videos,
+                                onSelect: { selectVideo($0, from: group.videos) },
+                                loadMore: index == rows.count - 1
+                                    ? {
+                                        if let paginationTrigger {
+                                            sectionVM.loadMoreIfNeeded(lastVideo: paginationTrigger)
+                                        }
+                                    }
+                                    : nil
+                            )
+                        }
+                        .accessibilityIdentifier("home.shelf.\(index)")
+                    }
+
+                    if sectionVM.isLoading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 24)
+                    }
+                }
+                .padding(.vertical, 24)
+            }
+            .accessibilityIdentifier("home.personalizedShelves")
+            .refreshable { sectionVM.loadContent(refresh: true, source: "tvHome.refresh") }
+            .focusSection()
+        }
+    }
+    #endif
 
     // MARK: - Section feed  (non-Home chips)
 

@@ -21,6 +21,10 @@ public struct SettingsView: View {
     public var body: some View {
         Form {
             accountSection
+            #if os(tvOS)
+            personalTVPlaybackSection
+            personalTVContentSection
+            #else
             playerSection
             generalSection
             uiSection
@@ -28,6 +32,7 @@ public struct SettingsView: View {
             deArrowSection
             #if os(macOS)
             experimentalSection
+            #endif
             #endif
             aboutSection
         }
@@ -46,6 +51,59 @@ public struct SettingsView: View {
         }
         #endif
     }
+
+    #if os(tvOS)
+    // MARK: - Personal tvOS settings
+
+    private var personalTVPlaybackSection: some View {
+        @Bindable var store = store
+        return Section("Playback") {
+            Picker("Quality", selection: $store.settings.preferredQuality) {
+                ForEach(AppSettings.VideoQuality.allCases, id: \.self) { quality in
+                    Text(quality.rawValue.capitalized).tag(quality)
+                }
+            }
+            .accessibilityIdentifier("settings.preferredQualityPicker")
+
+            Picker("Audio Language", selection: $store.settings.preferredAudioLanguage) {
+                Text("System Default").tag(nil as String?)
+                Text("Original Track").tag("original" as String?)
+                Divider()
+                Text("English").tag("en" as String?)
+                Text("Portuguese").tag("pt" as String?)
+                Text("Russian").tag("ru" as String?)
+                Text("Spanish").tag("es" as String?)
+                Text("French").tag("fr" as String?)
+                Text("German").tag("de" as String?)
+            }
+            .accessibilityIdentifier("settings.preferredAudioLanguageRow")
+
+            Picker("Subtitle Language", selection: $store.settings.preferredCaptionLanguage) {
+                Text("System Default").tag(nil as String?)
+                Text("English").tag("en" as String?)
+                Text("Portuguese").tag("pt" as String?)
+                Text("Russian").tag("ru" as String?)
+                Text("Spanish").tag("es" as String?)
+                Text("French").tag("fr" as String?)
+                Text("German").tag("de" as String?)
+            }
+            .accessibilityIdentifier("settings.preferredSubtitleLanguageRow")
+
+            Toggle("Autoplay Next Video", isOn: $store.settings.autoplayEnabled)
+                .accessibilityIdentifier("settings.autoplayToggle")
+        }
+    }
+
+    private var personalTVContentSection: some View {
+        @Bindable var store = store
+        return Section("Content") {
+            Toggle("SponsorBlock", isOn: $store.settings.sponsorBlockEnabled)
+                .accessibilityIdentifier("settings.sponsorBlockToggle")
+            Toggle("DeArrow", isOn: $store.settings.deArrowEnabled)
+                .accessibilityIdentifier("settings.deArrowToggle")
+        }
+    }
+    #endif
 
     // MARK: - Account
 
@@ -299,7 +357,12 @@ public struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
+            #if os(tvOS)
+            LabeledContent("Fork", value: "Personal tvOS 1")
+            LabeledContent("Upstream", value: "00487cd · 2026-08-10")
+            #else
             LabeledContent("Version", value: appVersion)
+            #endif
             #if os(tvOS)
             Button {
                 showGithubQR = true
@@ -311,6 +374,7 @@ public struct SettingsView: View {
                 Label("View on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
             }
             #endif
+            #if !os(tvOS)
             Button {
                 CrashlyticsLogger.sendDiagnosticReport()
                 reportSent = true
@@ -326,6 +390,7 @@ public struct SettingsView: View {
             .accessibilityIdentifier("settings.sendDiagnosticReportButton")
             Button("Reset All Settings", role: .destructive) { store.reset() }
                 .accessibilityIdentifier("settings.resetAllButton")
+            #endif
         } header: {
             Text("About")
         }
@@ -346,7 +411,7 @@ public struct SettingsView: View {
 private struct GitHubQRView: View {
     @Environment(\.dismiss) private var dismiss
 
-    private let githubURL = "https://github.com/milika/SmartTubeIOS"
+    private let githubURL = "https://github.com/funnymataleao/SmartTubeIOS"
 
     var body: some View {
         ZStack(alignment: .topTrailing) {

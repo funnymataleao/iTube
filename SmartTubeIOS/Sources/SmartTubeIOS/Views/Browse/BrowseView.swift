@@ -300,6 +300,7 @@ struct VideoGridSection: View {
 struct VideoRowSection: View {
     let videos: [Video]
     let onSelect: (Video) -> Void
+    var loadMore: (() -> Void)? = nil
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -309,11 +310,17 @@ struct VideoRowSection: View {
                     VideoCardView(video: video, compact: false, onSelect: { onSelect(video) })
                         .frame(width: 360)
                         .accessibilityIdentifier("video.card.\(video.id)")
+                        .onAppear {
+                            if video.id == videos.last?.id { loadMore?() }
+                        }
                     #else
                     VideoCardView(video: video, compact: false)
                         .frame(width: 220)
                         .accessibilityIdentifier("video.card.\(video.id)")
                         .onTapGesture { onSelect(video) }
+                        .onAppear {
+                            if video.id == videos.last?.id { loadMore?() }
+                        }
                     #endif
                 }
             }
@@ -325,4 +332,3 @@ struct VideoRowSection: View {
         #endif
     }
 }
-

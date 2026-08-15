@@ -94,7 +94,9 @@ public struct RootView: View {
 
 enum AppSection: String, CaseIterable, Identifiable {
     case home      = "Home"
+    case subscriptions = "Subscriptions"
     case search    = "Search"
+    case history   = "History"
     case library   = "Library"
     case settings  = "Settings"
 
@@ -103,7 +105,9 @@ enum AppSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .home:     return AppSymbol.home
+        case .subscriptions: return "rectangle.stack"
         case .search:   return AppSymbol.search
+        case .history:  return "clock.arrow.circlepath"
         case .library:  return AppSymbol.library
         case .settings: return AppSymbol.settings
         }
@@ -113,10 +117,30 @@ enum AppSection: String, CaseIterable, Identifiable {
     func destination(api: InnerTubeAPI) -> some View {
         switch self {
         case .home:     HomeView(api: api)
+        case .subscriptions:
+            #if os(tvOS)
+            PersonalTVFeedView(sectionType: .subscriptions, api: api)
+            #else
+            LibraryView()
+            #endif
         case .search:   SearchView()
+        case .history:
+            #if os(tvOS)
+            PersonalTVFeedView(sectionType: .history, api: api)
+            #else
+            LibraryView()
+            #endif
         case .library:  LibraryView()
         case .settings: SettingsView()
         }
+    }
+
+    static var primarySections: [AppSection] {
+        #if os(tvOS)
+        [.home, .subscriptions, .search, .history, .settings]
+        #else
+        [.home, .search, .library, .settings]
+        #endif
     }
 }
 
@@ -179,7 +203,7 @@ struct MainTabView: View {
         )
         #endif
         TabView(selection: $selectedTab) {
-            ForEach(AppSection.allCases) { section in
+            ForEach(AppSection.primarySections) { section in
                 NavigationStack { section.destination(api: api) }
                     // Capture the bottom safe-area inset as seen from inside the tab
                     // (UITabBarController sets this to tab-bar height + home-indicator).
@@ -319,7 +343,7 @@ struct MainTVTabView: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            ForEach(AppSection.allCases) { section in
+            ForEach(AppSection.primarySections) { section in
                 NavigationStack { section.destination(api: api) }
                     .tabItem {
                         Label(section.rawValue, systemImage: section.icon)
@@ -351,7 +375,7 @@ struct MainSidebarView: View {
         @Bindable var browseVM = browseVM
         ZStack {
             NavigationSplitView {
-                List(AppSection.allCases, selection: $selectedSection) { section in
+                List(AppSection.primarySections, selection: $selectedSection) { section in
                     Label(section.rawValue, systemImage: section.icon)
                         .tag(section)
                 }
