@@ -26,7 +26,7 @@ extension InnerTubeAPI {
     /// If no shelves are found, falls back to the flat parser.
     func parseVideoGroupRows(from json: [String: Any]) -> [VideoGroup] {
         var rows: [VideoGroup] = []
-        var continuationToken: String? = nil
+        var feedContinuationToken: String? = nil
 
         // Renderer keys that are known ad/promoted slots — skip silently.
         let adRendererKeys: Set<String> = [
@@ -91,11 +91,39 @@ extension InnerTubeAPI {
         }
 
         func rendererTitle(_ renderer: [String: Any]) -> String? {
+            func nestedTitle(in obj: Any, depth: Int = 0) -> String? {
+                guard depth < 10 else { return nil }
+                if let dict = obj as? [String: Any] {
+                    if let title = dict["title"] as? String {
+                        return title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    if let title = dict["title"] as? [String: Any],
+                       let text = extractText(title) {
+                        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    for value in dict.values {
+                        if let title = nestedTitle(in: value, depth: depth + 1) { return title }
+                    }
+                } else if let array = obj as? [Any] {
+                    for value in array {
+                        if let title = nestedTitle(in: value, depth: depth + 1) { return title }
+                    }
+                }
+                return nil
+            }
+
             if let title = renderer["title"] as? String {
                 return title.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             if let title = renderer["title"] as? [String: Any], let text = extractText(title) {
                 return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            // Authenticated TVHTML5 shelves expose their visible heading at:
+            // headerRenderer.shelfHeaderRenderer.avatarLockup
+            //   .avatarLockupRenderer.title
+            if let headerRenderer = renderer["headerRenderer"] as? [String: Any],
+               let title = nestedTitle(in: headerRenderer) {
+                return title
             }
             if let header = renderer["header"] as? [String: Any] {
                 if let text = extractSectionTitle(from: header) {
@@ -147,29 +175,33 @@ extension InnerTubeAPI {
                 return
             }
             if let dict = obj as? [String: Any] {
-                // Authenticated TVHTML5 Home exposes its personalized categories as
-                // secondary-navigation tabs. Each tab is a real Google-ranked shelf;
-                // the nested shelfRenderer title is often only the structural "Home".
-                if let navigation = dict["tvSecondaryNavSectionRenderer"] as? [String: Any],
-                   let tabs = navigation["tabs"] as? [[String: Any]] {
-                    if let token = findContinuation(in: navigation) { continuationToken = token }
-                    for tab in tabs {
-                        guard let renderer = tab["tabRenderer"] as? [String: Any] else { continue }
-                        let videos = walkShelfContents(renderer["content"] as Any)
-                        guard !videos.isEmpty else { continue }
-                        rows.append(VideoGroup(
-                            title: displayShelfTitle(rendererTitle(renderer)),
-                            videos: videos,
-                            layout: .row
-                        ))
+                // This continuation belongs to the vertical Home feed and returns
+                // more Google-ranked shelves. Shelf-level horizontal continuations
+                // must not replace it, otherwise the Home feed turns into one long row.
+                if let sectionList = dict["sectionListRenderer"] as? [String: Any] {
+                    if let token = findContinuation(in: sectionList["continuations"] as Any) {
+                        feedContinuationToken = token
                     }
+                    walk(sectionList["contents"] as Any, depth: depth + 1)
+                    return
+                }
+                if let continuation = dict["sectionListContinuation"] as? [String: Any] {
+                    if let token = findContinuation(in: continuation["continuations"] as Any) {
+                        feedContinuationToken = token
+                    }
+                    walk(continuation["contents"] as Any, depth: depth + 1)
                     return
                 }
                 if let shelf = dict["richShelfRenderer"] as? [String: Any] {
                     let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["contents"] as Any)
                     if !videos.isEmpty {
-                        rows.append(VideoGroup(title: title, videos: videos, layout: .row))
+                        rows.append(VideoGroup(
+                            title: title,
+                            videos: videos,
+                            rowContinuationToken: findContinuation(in: shelf["contents"] as Any),
+                            layout: .row
+                        ))
                     }
                     return
                 }
@@ -177,7 +209,12 @@ extension InnerTubeAPI {
                     let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["items"] as Any)
                     if !videos.isEmpty {
-                        rows.append(VideoGroup(title: title, videos: videos, layout: .row))
+                        rows.append(VideoGroup(
+                            title: title,
+                            videos: videos,
+                            rowContinuationToken: findContinuation(in: shelf["items"] as Any),
+                            layout: .row
+                        ))
                     }
                     return
                 }
@@ -185,16 +222,20 @@ extension InnerTubeAPI {
                     let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["content"] as Any)
                     if !videos.isEmpty {
-                        rows.append(VideoGroup(title: title, videos: videos, layout: .row))
+                        rows.append(VideoGroup(
+                            title: title,
+                            videos: videos,
+                            rowContinuationToken: findContinuation(in: shelf["content"] as Any),
+                            layout: .row
+                        ))
                     }
-                    if let token = findContinuation(in: shelf) { continuationToken = token }
                     return
                 }
                 if let contItem = dict["continuationItemRenderer"] as? [String: Any],
                    let contEndpoint = contItem["continuationEndpoint"] as? [String: Any],
                    let contCmd = contEndpoint["continuationCommand"] as? [String: Any],
                    let ct = contCmd["token"] as? String {
-                    continuationToken = ct
+                    feedContinuationToken = ct
                     return
                 }
                 // Log any richSectionRenderer whose inner content is not a richShelfRenderer
@@ -226,7 +267,7 @@ extension InnerTubeAPI {
             if let flat = try? parseVideoGroup(from: json, title: BrowseSection.SectionType.home.defaultTitle) {
                 return [flat]
             }
-        } else if let token = continuationToken {
+        } else if let token = feedContinuationToken {
             // Attach continuation to the last row so BrowseViewModel can paginate
             rows[rows.count - 1].nextPageToken = token
         }

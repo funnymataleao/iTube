@@ -19,6 +19,7 @@ public protocol InnerTubeAPIProtocol: AnyObject, Sendable {
     // MARK: Home / browse
     func fetchHome(continuationToken: String?) async throws -> VideoGroup
     func fetchHomeRows(continuationToken: String?) async throws -> [VideoGroup]
+    func fetchHomeShelf(continuationToken: String) async throws -> VideoGroup
     func fetchSubscriptions(continuationToken: String?) async throws -> VideoGroup
     func fetchHistory(continuationToken: String?) async throws -> VideoGroup
     func fetchShorts() async throws -> VideoGroup

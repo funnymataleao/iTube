@@ -54,10 +54,7 @@ public struct HomeView: View {
            let homeIdx = all.firstIndex(where: { $0.type == .home }) {
             all.insert(BrowseSection(type: .recommended), at: homeIdx + 1)
         }
-        if store.settings.hideShorts {
-            return all.filter { $0.type != .shorts }
-        }
-        return all
+        return all.filter { $0.type != .shorts }
     }
 
     public init(api: InnerTubeAPI) {
@@ -349,7 +346,7 @@ public struct HomeView: View {
         let filteredRows = sectionVM.videoGroups.compactMap { group -> VideoGroup? in
             var copy = group
             copy.videos = group.videos.filter { video in
-                (!store.settings.hideShorts || !video.isShort)
+                !video.isShort
                     && (!store.settings.hideLiveShorts || !(video.isLive && video.isShort))
                     && (!store.settings.hideVideoPremieres || !video.isUpcoming)
             }
@@ -364,27 +361,31 @@ public struct HomeView: View {
             feedEmptyState
         } else {
             ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 20) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, group in
                         VStack(alignment: .leading, spacing: 4) {
                             if let title = group.title {
                                 Text(title)
                                     .font(.headline.weight(.semibold))
-                                    .padding(.horizontal, 64)
+                                    .padding(.horizontal, 32)
                                     .accessibilityAddTraits(.isHeader)
                             }
 
                             VideoRowSection(
                                 videos: group.videos,
                                 onSelect: { selectVideo($0, from: group.videos) },
-                                cardWidth: 600,
-                                loadMore: index == rows.count - 1
-                                    ? {
-                                        if let paginationTrigger {
-                                            sectionVM.loadMoreIfNeeded(lastVideo: paginationTrigger)
-                                        }
+                                cardWidth: 650,
+                                loadMore: {
+                                    if let lastVideo = group.videos.last {
+                                        sectionVM.loadMoreHomeShelfIfNeeded(
+                                            shelfID: group.id,
+                                            lastVideo: lastVideo
+                                        )
                                     }
-                                    : nil
+                                    if index == rows.count - 1, let paginationTrigger {
+                                        sectionVM.loadMoreIfNeeded(lastVideo: paginationTrigger)
+                                    }
+                                }
                             )
                         }
                         .accessibilityIdentifier("home.shelf.\(index)")
@@ -396,7 +397,8 @@ public struct HomeView: View {
                             .padding(.vertical, 24)
                     }
                 }
-                .padding(.vertical, 24)
+                .padding(.top, 18)
+                .padding(.bottom, 24)
             }
             .accessibilityIdentifier("home.personalizedShelves")
             .refreshable { sectionVM.loadContent(refresh: true, source: "tvHome.refresh") }
@@ -408,7 +410,7 @@ public struct HomeView: View {
     /// first carousel as requested. Structural/duplicate "Home" labels are
     /// removed; all remaining topic order comes directly from Google.
     private func orderedPersonalTVRows(_ rows: [VideoGroup]) -> [VideoGroup] {
-        var result: [VideoGroup] = []
+        var normalizedRows: [VideoGroup] = []
 
         for row in rows {
             var copy = row
@@ -418,6 +420,14 @@ public struct HomeView: View {
                 ? nil
                 : rawTitle
 
+            normalizedRows.append(copy)
+        }
+
+        // A named Google shelf must never be folded into an untitled structural
+        // container. If named shelves exist, omit structural rows entirely.
+        let hasNamedRows = normalizedRows.contains { $0.title != nil }
+        var result: [VideoGroup] = []
+        for copy in normalizedRows where !hasNamedRows || copy.title != nil {
             if let title = copy.title,
                let existingIndex = result.firstIndex(where: {
                    $0.title?.localizedCaseInsensitiveCompare(title) == .orderedSame
@@ -425,10 +435,8 @@ public struct HomeView: View {
                 var seen = Set(result[existingIndex].videos.map(\.id))
                 result[existingIndex].videos.append(contentsOf: copy.videos.filter { seen.insert($0.id).inserted })
                 result[existingIndex].nextPageToken = copy.nextPageToken ?? result[existingIndex].nextPageToken
-            } else if copy.title == nil, !result.isEmpty {
-                var seen = Set(result[result.count - 1].videos.map(\.id))
-                result[result.count - 1].videos.append(contentsOf: copy.videos.filter { seen.insert($0.id).inserted })
-                result[result.count - 1].nextPageToken = copy.nextPageToken ?? result[result.count - 1].nextPageToken
+                result[existingIndex].rowContinuationToken = result[existingIndex].rowContinuationToken
+                    ?? copy.rowContinuationToken
             } else {
                 result.append(copy)
             }

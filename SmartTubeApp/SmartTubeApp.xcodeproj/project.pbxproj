@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		03863DDC82B3DC452E915BF7 /* DownloadLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46FAE8C7AB41057B392DF731 /* DownloadLiveActivity.swift */; };
 		06412259452CCFBF300F2D4B /* SmartTubeIOS in Frameworks */ = {isa = PBXBuildFile; productRef = B8401470D9A590E7F3685830 /* SmartTubeIOS */; };
-		1A2B3C4D5E6F1A2B3C4D5E63 /* TVFocusChainUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F1A2B3C4D5E62 /* TVFocusChainUITests.swift */; };
 		494A17316084B602873D7C05 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AE55B486AFD7F51FEF1874FF /* Assets.xcassets */; };
 		53352CFF63CF0A5B34A1998B /* SpinnerDismissalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD3DC338DC0106A0F179BC1 /* SpinnerDismissalUITests.swift */; };
 		673C1D012F7F20340021583B /* Launch Screen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 673C1D002F7F20340021583B /* Launch Screen.storyboard */; platformFilter = ios; };
@@ -109,13 +108,6 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		1A2B3C4D5E6F1A2B3C4D5E69 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = CF958B49C3E80CFAE3F092E3 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 67E6B67A2F9535CD00CD372F;
-			remoteInfo = "Smart Tube";
-		};
 		49607BD3D63D4720113FA32C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = CF958B49C3E80CFAE3F092E3 /* Project object */;
@@ -164,7 +156,6 @@
 
 /* Begin PBXFileReference section */
 		161D597B9340722805A04592 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
-		1A2B3C4D5E6F1A2B3C4D5E61 /* SmartTubeTVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SmartTubeTVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A2B3C4D5E6F1A2B3C4D5E62 /* TVFocusChainUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVFocusChainUITests.swift; sourceTree = "<group>"; };
 		29356C9641042E3DA5F16175 /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
 		29446E9C8CE04B2FBCDD8A2E /* FallbackVideoPlaybackUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FallbackVideoPlaybackUITests.swift; sourceTree = "<group>"; };
@@ -483,7 +474,6 @@
 				79E77E6DD18B12CA7A5341D0 /* SmartTubeDownloadWidget.appex */,
 				AA01000000000000000000A3 /* SmartTubeShareExtension.appex */,
 				67E6B67B2F9535CD00CD372F /* Smart Tube.app */,
-				1A2B3C4D5E6F1A2B3C4D5E61 /* SmartTubeTVUITests.xctest */,
 				67A5E7F32FB3932400C53D61 /* SafariExtension.appex */,
 			);
 			name = Products;
@@ -536,22 +526,6 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		1A2B3C4D5E6F1A2B3C4D5E64 /* SmartTubeTVUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 1A2B3C4D5E6F1A2B3C4D5E68 /* Build configuration list for PBXNativeTarget "SmartTubeTVUITests" */;
-			buildPhases = (
-				1A2B3C4D5E6F1A2B3C4D5E65 /* Sources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				1A2B3C4D5E6F1A2B3C4D5E6A /* PBXTargetDependency */,
-			);
-			name = SmartTubeTVUITests;
-			productName = SmartTubeTVUITests;
-			productReference = 1A2B3C4D5E6F1A2B3C4D5E61 /* SmartTubeTVUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 		38EEA5DF9BAA36788D776AB0 /* SmartTubeUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = AEAB87BD362E4200A8AED20B /* Build configuration list for PBXNativeTarget "SmartTubeUITests" */;
@@ -687,9 +661,6 @@
 				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
-					1A2B3C4D5E6F1A2B3C4D5E64 = {
-						TestTargetID = 67E6B67A2F9535CD00CD372F;
-					};
 					38EEA5DF9BAA36788D776AB0 = {
 						TestTargetID = 5A4C56D3A7C36BE68C3C3CE0;
 					};
@@ -741,7 +712,6 @@
 				92FF8ABD9CCECACCB7D9D2F1 /* SmartTubeDownloadWidget */,
 				AA01000000000000000000A7 /* SmartTubeShareExtension */,
 				67E6B67A2F9535CD00CD372F /* Smart Tube */,
-				1A2B3C4D5E6F1A2B3C4D5E64 /* SmartTubeTVUITests */,
 				67A5E7F22FB3932400C53D61 /* SafariExtension */,
 			);
 		};
@@ -831,26 +801,6 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		1A2B3C4D5E6F1A2B3C4D5E65 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				AA1100000000000000001301 /* UITestHelpers.swift in Sources */,
-				1A2B3C4D5E6F1A2B3C4D5E63 /* TVFocusChainUITests.swift in Sources */,
-				AA1100000000000000000DA2 /* TVPlayerSettingsUITests.swift in Sources */,
-				AA1100000000000000001202 /* TVSettingsUITests.swift in Sources */,
-				AA1100000000000000001302 /* TVHomeFeedUITests.swift in Sources */,
-				AA1100000000000000001502 /* TVLibraryUITests.swift in Sources */,
-				AA1100000000000000001602 /* TVPlayerControlsUITests.swift in Sources */,
-				AA1100000000000000001702 /* TVVideoPlaybackRegressionUITests.swift in Sources */,
-				BE1E910C1C5E4CFBB7475AAE /* TVShortsDownNavigationUITests.swift in Sources */,
-				CF3A820B5D1E4A9F8E2C71BD /* TVMoreMenuNavigationUITests.swift in Sources */,
-				AA1100000000000000001802 /* TVAudioAndCaptionPickerUITests.swift in Sources */,
-				TV00000000000000000000B02 /* TVVideoPlaybackBenchmarkUITests.swift in Sources */,
-				TV00000000000000000000R02 /* TVWKHLSReplayRegressionUITests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		67A5E7EF2FB3932400C53D61 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -976,11 +926,6 @@
 			target = 92FF8ABD9CCECACCB7D9D2F1 /* SmartTubeDownloadWidget */;
 			targetProxy = 49607BD3D63D4720113FA32C /* PBXContainerItemProxy */;
 		};
-		1A2B3C4D5E6F1A2B3C4D5E6A /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 67E6B67A2F9535CD00CD372F /* Smart Tube */;
-			targetProxy = 1A2B3C4D5E6F1A2B3C4D5E69 /* PBXContainerItemProxy */;
-		};
 		67A5E80A2FB3932400C53D61 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 67A5E7F22FB3932400C53D61 /* SafariExtension */;
@@ -1036,51 +981,6 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
-		};
-		1A2B3C4D5E6F1A2B3C4D5E66 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.void.smarttube.tv.uitests;
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				SDKROOT = appletvos;
-				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
-				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 3;
-				TEST_TARGET_NAME = "Smart Tube";
-				TVOS_DEPLOYMENT_TARGET = 17.0;
-			};
-			name = Debug;
-		};
-		1A2B3C4D5E6F1A2B3C4D5E67 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.void.smarttube.tv.uitests;
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				SDKROOT = appletvos;
-				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
-				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 3;
-				TEST_TARGET_NAME = "Smart Tube";
-				TVOS_DEPLOYMENT_TARGET = 17.0;
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
 		};
 		4AF41A3BD9270B2E62E2D1FD /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -1583,15 +1483,6 @@
 			buildConfigurations = (
 				4AF41A3BD9270B2E62E2D1FD /* Debug */,
 				FF8768BF04D8F26434D2CCCD /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
-		1A2B3C4D5E6F1A2B3C4D5E68 /* Build configuration list for PBXNativeTarget "SmartTubeTVUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				1A2B3C4D5E6F1A2B3C4D5E66 /* Debug */,
-				1A2B3C4D5E6F1A2B3C4D5E67 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

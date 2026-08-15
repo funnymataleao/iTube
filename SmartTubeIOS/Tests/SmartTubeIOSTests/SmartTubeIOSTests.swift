@@ -521,8 +521,8 @@ struct HistoryParsingTests {
 @Suite("Home Row Parsing")
 struct HomeRowParsingTests {
 
-    @Test("TVHTML5 personalized tabs become Google-titled Home shelves")
-    func tvHTML5PersonalizedTabsProduceNamedRows() async {
+    @Test("Live TVHTML5 shelf headers become separate Google-titled Home rows")
+    func tvHTML5ShelfHeaderRendererProducesNamedRows() async {
         func tile(_ id: String, _ title: String) -> [String: Any] {
             [
                 "tileRenderer": [
@@ -546,22 +546,24 @@ struct HomeRowParsingTests {
             ]
         }
 
-        func tab(_ title: String, _ id: String) -> [String: Any] {
+        func shelf(_ title: String, _ id: String) -> [String: Any] {
             [
-                "tabRenderer": [
-                    "title": ["simpleText": title],
-                    "content": [
-                        "tvSurfaceContentRenderer": [
-                            "content": [
-                                "sectionListRenderer": [
-                                    "contents": [[
-                                        "shelfRenderer": [
-                                            "title": ["simpleText": "Home"],
-                                            "content": ["horizontalListRenderer": ["items": [tile(id, title)]]]
-                                        ]
-                                    ]]
+                "shelfRenderer": [
+                    "headerRenderer": [
+                        "shelfHeaderRenderer": [
+                            "avatarLockup": [
+                                "avatarLockupRenderer": [
+                                    "title": ["runs": [["text": title]]]
                                 ]
                             ]
+                        ]
+                    ],
+                    "content": [
+                        "horizontalListRenderer": [
+                            "items": [tile(id, title)],
+                            "continuations": [[
+                                "nextContinuationData": ["continuation": "\(id)-row-token"]
+                            ]]
                         ]
                     ]
                 ]
@@ -572,15 +574,19 @@ struct HomeRowParsingTests {
             "contents": [
                 "tvBrowseRenderer": [
                     "content": [
-                        "tvSecondaryNavRenderer": [
-                            "sections": [[
-                                "tvSecondaryNavSectionRenderer": [
-                                    "tabs": [
-                                        tab("New to you", "newVideo"),
-                                        tab("Gaming", "gamingVideo")
-                                    ]
+                        "tvSurfaceContentRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [
+                                        shelf("Recommended", "recommendedVideo"),
+                                        shelf("Top news", "newsVideo"),
+                                        shelf("Recently uploaded", "recentVideo")
+                                    ],
+                                    "continuations": [[
+                                        "nextContinuationData": ["continuation": "topics-page-token"]
+                                    ]]
                                 ]
-                            ]]
+                            ]
                         ]
                     ]
                 ]
@@ -588,8 +594,55 @@ struct HomeRowParsingTests {
         ]
 
         let rows = await InnerTubeAPI().parseVideoGroupRowsForTesting(response)
-        #expect(rows.map(\.title) == ["New to you", "Gaming"])
-        #expect(rows.map { $0.videos.first?.id } == ["newVideo", "gamingVideo"])
+        #expect(rows.map(\.title) == ["Recommended", "Top news", "Recently uploaded"])
+        #expect(rows.map { $0.videos.first?.id } == ["recommendedVideo", "newsVideo", "recentVideo"])
+        #expect(rows.map(\.rowContinuationToken) == [
+            "recommendedVideo-row-token",
+            "newsVideo-row-token",
+            "recentVideo-row-token"
+        ])
+        #expect(rows.last?.nextPageToken == "topics-page-token")
+    }
+
+    @Test("TVHTML5 topic continuation returns more named shelves")
+    func tvHTML5SectionListContinuationProducesMoreRows() async {
+        func video(_ id: String) -> [String: Any] {
+            ["videoRenderer": ["videoId": id, "title": ["simpleText": id]]]
+        }
+        func shelf(_ title: String, _ id: String) -> [String: Any] {
+            [
+                "shelfRenderer": [
+                    "headerRenderer": [
+                        "shelfHeaderRenderer": [
+                            "avatarLockup": [
+                                "avatarLockupRenderer": [
+                                    "title": ["runs": [["text": title]]]
+                                ]
+                            ]
+                        ]
+                    ],
+                    "content": ["horizontalListRenderer": ["items": [video(id)]]]
+                ]
+            ]
+        }
+
+        let response: [String: Any] = [
+            "continuationContents": [
+                "sectionListContinuation": [
+                    "contents": [
+                        shelf("Gaming", "gamingVideo"),
+                        shelf("Computer program", "programVideo")
+                    ],
+                    "continuations": [[
+                        "nextContinuationData": ["continuation": "next-topics-page-token"]
+                    ]]
+                ]
+            ]
+        ]
+
+        let rows = await InnerTubeAPI().parseVideoGroupRowsForTesting(response)
+        #expect(rows.map(\.title) == ["Gaming", "Computer program"])
+        #expect(rows.last?.nextPageToken == "next-topics-page-token")
     }
 
     @Test("Structural Home shelf title is never exposed as a heading")

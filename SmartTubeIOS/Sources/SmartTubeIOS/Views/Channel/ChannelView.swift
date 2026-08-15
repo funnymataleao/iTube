@@ -6,20 +6,11 @@ import SmartTubeIOSCore
 // Displays channel info, subscriber count and a grid of recent uploads.
 // Mirrors the Android `ChannelFragment`.
 
-// MARK: - ChannelFilter
-
-private enum ChannelFilter: String, CaseIterable {
-    case all    = "All"
-    case shorts = "Shorts"
-}
-
 public struct ChannelView: View {
     public let channelId: String
     @State private var vm = ChannelViewModel()
     @State private var selectedVideo: Video?
-    @State private var shortsPresentation: ShortsPresentation?
     @State private var channelDestination: ChannelDestination?
-    @State private var filter: ChannelFilter = .all
     @State private var isFollowedLocally = false
     @Environment(SettingsStore.self) private var store
     @Environment(AuthService.self) private var auth
@@ -65,11 +56,6 @@ public struct ChannelView: View {
             guard let channelId = note.userInfo?["channelId"] as? String, !channelId.isEmpty else { return }
             channelDestination = ChannelDestination(channelId: channelId)
         }
-        #if !os(macOS)
-        .fullScreenCover(item: $shortsPresentation) { target in
-            ShortsPlayerView(videos: target.videos, startIndex: target.startIndex, api: api)
-        }
-        #endif
         .alert("Error", isPresented: .constant(vm.error != nil), presenting: vm.error) { _ in
             Button("Retry") { vm.load(channelId: channelId) }
             Button("Dismiss", role: .cancel) {}
@@ -116,23 +102,7 @@ public struct ChannelView: View {
                     channelHeader(channel)
                 }
 
-                // All / Shorts filter
-                Picker("Filter", selection: $filter) {
-                    ForEach(ChannelFilter.allCases, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 10)
-                .accessibilityIdentifier("channel.filterPicker")
-
-                let filtered = filteredVideos
-                if filter == .shorts {
-                    shortsGrid(filtered)
-                } else {
-                    videosGrid(filtered)
-                }
+                videosGrid(filteredVideos)
 
                 if vm.isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding()
@@ -146,16 +116,17 @@ public struct ChannelView: View {
     // MARK: - Filtered data
 
     private var filteredVideos: [Video] {
-        switch filter {
-        case .all:    return vm.videos.filter { !store.settings.hideShorts || !$0.isShort }
-        case .shorts: return vm.videos.filter { $0.isShort }
-        }
+        vm.videos.filter { !$0.isShort }
     }
 
     // MARK: - Grid layouts
 
     private func videosGrid(_ videos: [Video]) -> some View {
+        #if os(tvOS)
+        let compact = false
+        #else
         let compact = store.settings.compactThumbnails
+        #endif
         return Group {
             if compact {
                 LazyVStack(spacing: 0) {
@@ -179,7 +150,7 @@ public struct ChannelView: View {
                 }
             } else {
                 #if os(tvOS)
-                let columnCount = 4
+                let columnCount = 3
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(stride(from: 0, to: videos.count, by: columnCount)), id: \.self) { startIdx in
                         let rowVideos = Array(videos[startIdx..<min(startIdx + columnCount, videos.count)])
@@ -223,27 +194,6 @@ public struct ChannelView: View {
                 #endif
             }
         }
-    }
-
-    private func shortsGrid(_ videos: [Video]) -> some View {
-        let columns = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
-        return LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(videos) { video in
-                VideoCardView(video: video)
-                    .aspectRatio(9/16, contentMode: .fit)
-                    .onTapGesture { selectShort(video, from: videos) }
-                    .onAppear {
-                        if video.id == vm.videos.last?.id { vm.loadMore() }
-                    }
-            }
-        }
-        .padding(.horizontal)
-        .accessibilityIdentifier("channel.videoGrid")
-    }
-
-    private func selectShort(_ video: Video, from videos: [Video]) {
-        let idx = videos.firstIndex(where: { $0.id == video.id }) ?? 0
-        shortsPresentation = ShortsPresentation(videos: videos, startIndex: idx)
     }
 
     private func toggleSponsorBlockExclusion(for channel: Channel) {

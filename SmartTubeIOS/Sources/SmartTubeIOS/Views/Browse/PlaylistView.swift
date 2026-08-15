@@ -90,8 +90,13 @@ public struct PlaylistView: View {
     }
 
     private var content: some View {
-        ScrollView {
-            if store.settings.compactThumbnails {
+        #if os(tvOS)
+        let compact = false
+        #else
+        let compact = store.settings.compactThumbnails
+        #endif
+        return ScrollView {
+            if compact {
 
                 LazyVStack(spacing: 0) {
                     ForEach(displayVideos) { video in
@@ -136,7 +141,7 @@ public struct PlaylistView: View {
                 }
             } else {
                 #if os(tvOS)
-                let columnCount = 4
+                let columnCount = 3
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(stride(from: 0, to: displayVideos.count, by: columnCount)), id: \.self) { startIdx in
                         let rowVideos = Array(displayVideos[startIdx..<min(startIdx + columnCount, displayVideos.count)])
@@ -206,7 +211,7 @@ public struct PlaylistView: View {
     }
 
     private var displayVideos: [Video] {
-        vm.videos.filter { !store.settings.hideShorts || !$0.isShort }
+        vm.videos.filter { !$0.isShort }
     }
 
     private var emptyState: some View {

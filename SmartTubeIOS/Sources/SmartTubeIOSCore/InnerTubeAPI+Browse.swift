@@ -66,6 +66,18 @@ extension InnerTubeAPI {
         return rows
     }
 
+    /// Fetches the next page for one horizontal Home shelf. TVHTML5 returns
+    /// these as `horizontalListContinuation`, independently from the vertical
+    /// `sectionListContinuation` used by `fetchHomeRows`.
+    public func fetchHomeShelf(continuationToken: String) async throws -> VideoGroup {
+        let body = makeBody(client: tvClientContext,
+                            continuationToken: continuationToken,
+                            includeVisitorData: true)
+        let data = try await postTV(endpoint: "browse", body: body)
+        updateVisitorData(from: data)
+        return try parseVideoGroup(from: data, title: nil)
+    }
+
     // MARK: - Subscriptions
 
     /// Fetches subscriptions feed (requires auth).

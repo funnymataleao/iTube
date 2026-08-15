@@ -23,6 +23,7 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
 
     var homeResult: VideoGroup = VideoGroup(title: "Home", videos: [])
     var homeRowsResult: [VideoGroup] = []
+    var homeShelfResult: VideoGroup = VideoGroup(videos: [])
     var subscriptionsResult: VideoGroup = VideoGroup(title: "Subs", videos: [])
     var historyResult: VideoGroup = VideoGroup(title: "History", videos: [])
     var shortsResult: VideoGroup = VideoGroup(title: "Shorts", videos: [])
@@ -68,6 +69,12 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
         calls.append(Call(method: "fetchHomeRows", args: [continuationToken ?? "nil"]))
         if let e = errorToThrow { throw e }
         return homeRowsResult
+    }
+
+    func fetchHomeShelf(continuationToken: String) async throws -> VideoGroup {
+        calls.append(Call(method: "fetchHomeShelf", args: [continuationToken]))
+        if let e = errorToThrow { throw e }
+        return homeShelfResult
     }
 
     func fetchSubscriptions(continuationToken: String?) async throws -> VideoGroup {
@@ -500,6 +507,62 @@ struct HomeViewModelTests {
 @Suite("BrowseViewModel")
 @MainActor
 struct BrowseViewModelTests {
+
+    @Test("Home keeps legitimate overlap between different personalized shelves")
+    func homeKeepsCrossShelfDuplicates() async {
+        let mock = MockInnerTubeAPI()
+        let shared = makeVideo("shared_AAAAA")
+        mock.homeRowsResult = [
+            VideoGroup(title: "Recommended", videos: [shared, makeVideo("rec_BBBBB")], layout: .row),
+            VideoGroup(title: "Gaming", videos: [shared, makeVideo("game_CCCCC")], layout: .row)
+        ]
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        vm.loadContent(for: section, refresh: true, source: "test")
+        await waitForTasks(until: { vm.videoGroups.count == 2 })
+
+        #expect(vm.videoGroups[0].videos.count == 2)
+        #expect(vm.videoGroups[1].videos.count == 2)
+        #expect(vm.videoGroups[1].videos.contains(where: { $0.id == shared.id }))
+    }
+
+    @Test("A Home shelf appends its own horizontal continuation page")
+    func homeShelfLoadsHorizontalContinuation() async {
+        let mock = MockInnerTubeAPI()
+        let first = makeVideo("first_AAAAA")
+        let shelfID = UUID()
+        mock.homeRowsResult = [
+            VideoGroup(
+                id: shelfID,
+                title: "Gaming",
+                videos: [first],
+                rowContinuationToken: "gaming-row-page-2",
+                layout: .row
+            )
+        ]
+        mock.homeShelfResult = VideoGroup(
+            videos: [first, makeVideo("second_BBBBB"), makeVideo("third_CCCCC")],
+            nextPageToken: nil,
+            layout: .row
+        )
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        vm.loadContent(for: section, refresh: true, source: "test")
+        await waitForTasks(until: { vm.videoGroups.first?.id == shelfID })
+
+        vm.loadMoreHomeShelfIfNeeded(shelfID: shelfID, lastVideo: first)
+        await waitForTasks(until: { vm.videoGroups.first?.videos.count == 3 })
+
+        #expect(mock.calls.contains {
+            $0.method == "fetchHomeShelf" && $0.args == ["gaming-row-page-2"]
+        })
+        #expect(vm.videoGroups.first?.videos.map(\.id) == [
+            "first_AAAAA", "second_BBBBB", "third_CCCCC"
+        ])
+        #expect(vm.videoGroups.first?.rowContinuationToken == nil)
+    }
 
     @Test("loadContent for .subscriptions calls fetchSubscriptions and populates videoGroups")
     func loadSubscriptionsPopulatesGroups() async {

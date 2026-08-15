@@ -30,16 +30,6 @@
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
       <Testables>
-         <TestableReference
-            skipped = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "1A2B3C4D5E6F1A2B3C4D5E64"
-               BuildableName = "SmartTubeTVUITests.xctest"
-               BlueprintName = "SmartTubeTVUITests"
-               ReferencedContainer = "container:SmartTubeApp.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

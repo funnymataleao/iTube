@@ -37,6 +37,9 @@ public final class BrowseViewModel {
     /// which covers the initial/refresh fetch. Keeping these separate prevents the preload
     /// cache work that follows the initial fetch from blocking subsequent loadMore calls.
     private var isLoadingMore: Bool = false
+    /// Shelves currently fetching their own horizontal continuation page.
+    /// Each Home carousel paginates independently from the vertical Home feed.
+    private var loadingHomeShelfIDs: Set<UUID> = []
     public var error: Error?
     /// True when the current section requires authentication and the user is not signed in.
     public private(set) var isAuthRequired: Bool = false
@@ -154,6 +157,7 @@ public final class BrowseViewModel {
         browseLog.notice("loadContent source=\(source) section=\(target.title) refresh=\(refresh) channels=\(chCount) videos=\(vCount) loading=\(loading)")
         if refresh {
             videoGroups = []
+            loadingHomeShelfIDs.removeAll()
             subscribedChannels = []
             recommendedShortsVideos = []
             loadedAt = nil
@@ -228,6 +232,59 @@ public final class BrowseViewModel {
         browseLog.notice("loadMore triggered: section=\(currentSection.title) currentCount=\(videoGroups.first?.videos.count ?? 0)")
         isLoadingMore = true  // synchronous guard — prevents duplicate pagination tasks before the Task body runs
         fetchTask = Task { await fetchNextPage(for: currentSection) }
+    }
+
+    /// Loads more cards for a single horizontal Home shelf when its last card appears.
+    /// This is intentionally independent from `loadMoreIfNeeded`, which adds more
+    /// shelves to the bottom of the vertical Home feed.
+    public func loadMoreHomeShelfIfNeeded(shelfID: UUID, lastVideo: Video) {
+        guard currentSection.type == .home,
+              let index = videoGroups.firstIndex(where: { $0.id == shelfID }),
+              videoGroups[index].videos.contains(where: { $0.id == lastVideo.id }),
+              videoGroups[index].rowContinuationToken != nil,
+              !loadingHomeShelfIDs.contains(shelfID)
+        else { return }
+
+        loadingHomeShelfIDs.insert(shelfID)
+        Task { await fetchNextHomeShelfPage(shelfID: shelfID) }
+    }
+
+    private func fetchNextHomeShelfPage(shelfID: UUID, autoChainDepth: Int = 0) async {
+        guard let index = videoGroups.firstIndex(where: { $0.id == shelfID }),
+              let token = videoGroups[index].rowContinuationToken
+        else {
+            loadingHomeShelfIDs.remove(shelfID)
+            return
+        }
+
+        do {
+            let page = try await retryWithBackoff(label: "BrowseVM[Home shelf]") {
+                try await api.fetchHomeShelf(continuationToken: token)
+            }
+            guard let currentIndex = videoGroups.firstIndex(where: { $0.id == shelfID }) else {
+                loadingHomeShelfIDs.remove(shelfID)
+                return
+            }
+
+            var seen = Set(videoGroups[currentIndex].videos.map(\.id))
+            let newVideos = page.videos.filter { seen.insert($0.id).inserted }
+            videoGroups[currentIndex].videos.append(contentsOf: newVideos)
+            videoGroups[currentIndex].rowContinuationToken = page.nextPageToken
+
+            browseLog.notice("Home shelf page success: title=\(self.videoGroups[currentIndex].title ?? "?") added=\(newVideos.count) nextToken=\(page.nextPageToken != nil)")
+
+            // A continuation page can contain only duplicates. Follow a small,
+            // bounded number of additional tokens so the carousel does not stall.
+            if newVideos.isEmpty, page.nextPageToken != nil, autoChainDepth < 2 {
+                await fetchNextHomeShelfPage(shelfID: shelfID, autoChainDepth: autoChainDepth + 1)
+                return
+            }
+        } catch {
+            browseLog.error("Home shelf page failed: \(String(describing: error))")
+            self.error = error
+        }
+
+        loadingHomeShelfIDs.remove(shelfID)
     }
 
     /// Refreshes the current section's feed if the last successful fetch was more than
@@ -326,11 +383,12 @@ public final class BrowseViewModel {
                         videoGroups = [deduped]
                     } else {
                         isAuthRequired = false
-                        // Dedup within each row — YouTube can return the same video ID
-                        // in multiple shelves of the initial home response.
-                        var seen = Set<String>()
+                        // Deduplicate only inside each shelf. A video may legitimately
+                        // appear in several personalized topics; removing it globally
+                        // makes later carousels look almost empty.
                         let dedupedRows = rows.map { row -> VideoGroup in
                             var copy = row
+                            var seen = Set<String>()
                             copy.videos = row.videos.filter { seen.insert($0.id).inserted }
                             return copy
                         }.filter { !$0.videos.isEmpty }
@@ -506,14 +564,19 @@ public final class BrowseViewModel {
                 if Task.isCancelled {
                     browseLog.notice("fetchNextPage cancelled: section=\(section.title)")
                 } else {
-                    // Deduplicate new rows against all videos already in the feed.
-                    // YouTube continuation responses occasionally re-include videos
-                    // from earlier pages, causing blank cells in the grid.
-                    let existingIds = Set(videoGroups.flatMap(\.videos).map(\.id))
-                    var seenInPage = existingIds
                     let filteredRows = newRows.map { row -> VideoGroup in
                         var copy = row
-                        copy.videos = row.videos.filter { seenInPage.insert($0.id).inserted }
+                        // Only compare against an earlier shelf with the same title.
+                        // Different personalized topics are allowed to overlap.
+                        let matchingIds = videoGroups
+                            .filter { existing in
+                                guard let lhs = existing.title, let rhs = row.title else { return false }
+                                return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedSame
+                            }
+                            .flatMap(\.videos)
+                            .map(\.id)
+                        var seen = Set(matchingIds)
+                        copy.videos = row.videos.filter { seen.insert($0.id).inserted }
                         return copy
                     }.filter { !$0.videos.isEmpty }
                     let count = filteredRows.flatMap(\.videos).count

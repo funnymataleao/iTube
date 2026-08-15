@@ -154,11 +154,10 @@ public struct SearchView: View {
     // MARK: - Results
 
     private var resultsView: some View {
-        let hideShorts = store.settings.hideShorts
         let hideLiveShorts = store.settings.hideLiveShorts
         let hideVideoPremieres = store.settings.hideVideoPremieres
         let displayResults = vm.results
-            .filter { !hideShorts || !$0.isShort }
+            .filter { !$0.isShort }
             .filter { !hideLiveShorts || !($0.isLive && $0.isShort) }
             .filter { !hideVideoPremieres || !$0.isUpcoming }
         return ScrollView {

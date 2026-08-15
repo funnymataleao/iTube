@@ -82,7 +82,7 @@ struct PersonalTVFeedView: View {
     private var videos: [Video] {
         viewModel.videoGroups
             .flatMap(\.videos)
-            .filter { !store.settings.hideShorts || !$0.isShort }
+            .filter { !$0.isShort }
     }
 
     private var signedOutState: some View {

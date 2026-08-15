@@ -102,11 +102,10 @@ struct RSSFeedsView: View {
     // MARK: - Video List
 
     private var videoList: some View {
-        let hideShorts = store.settings.hideShorts
         let hideLiveShorts = store.settings.hideLiveShorts
         let hideVideoPremieres = store.settings.hideVideoPremieres
         let displayVideos = vm.videos
-            .filter { !hideShorts || !$0.isShort }
+            .filter { !$0.isShort }
             .filter { !hideLiveShorts || !($0.isLive && $0.isShort) }
             .filter { !hideVideoPremieres || !$0.isUpcoming }
         return ScrollView {

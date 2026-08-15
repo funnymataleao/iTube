@@ -259,15 +259,13 @@ public struct SettingsView: View {
                 }
             }
             .accessibilityIdentifier("settings.themeRow")
-            Toggle("Hide Shorts", isOn: $store.settings.hideShorts)
-                .accessibilityIdentifier("settings.hideShortsToggle")
-            Toggle("Hide Live Shorts", isOn: $store.settings.hideLiveShorts)
-                .accessibilityIdentifier("settings.hideLiveShortsToggle")
             Toggle("Hide Video Premieres", isOn: $store.settings.hideVideoPremieres)
                 .accessibilityIdentifier("settings.hideVideoPremieresToggle")
             Toggle("Per-Device Recommendations", isOn: $store.settings.perDeviceRecommendationsEnabled)
                 .accessibilityIdentifier("settings.perDeviceRecommendationsToggle")
+            #if !os(tvOS)
             Toggle("Compact Thumbnails", isOn: $store.settings.compactThumbnails)
+            #endif
             NavigationLink("Visible Sections") {
                 SectionsSettingsView()
                     .environment(store)
@@ -464,7 +462,7 @@ private struct GitHubQRView: View {
 struct SectionsSettingsView: View {
     @Environment(SettingsStore.self) private var store
 
-    private let allSections = BrowseSection.allSections
+    private let allSections = BrowseSection.allSections.filter { $0.type != .shorts }
 
     var body: some View {
         @Bindable var store = store
