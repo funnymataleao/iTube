@@ -172,8 +172,8 @@ public final class BrowseViewModel {
             if !ids.isEmpty, target.type == .home {
                 isAuthRequired = false
                 isLoading = false
-                let titles = ["For you", "News for you", "Science & Space"]
-                videoGroups = titles.enumerated().map { rowIndex, title in
+                let titles = ["Recommended", "New to you", "Science & Space"]
+                videoGroups = titles.map { title in
                     let videos = ids.map { id in
                         Video(
                             id: id,

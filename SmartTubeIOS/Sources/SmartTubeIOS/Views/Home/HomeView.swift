@@ -44,12 +44,6 @@ public struct HomeView: View {
     @FocusState private var focusedSection: BrowseSection?
     #endif
     private var visibleSections: [BrowseSection] {
-        #if os(tvOS)
-        // Subscriptions and History have dedicated top-level tabs on tvOS. Keep
-        // the Home chip bar focused on discovery, matching the living-room flow.
-        return [.home, .gaming, .news, .live, .sports, .music]
-            .compactMap { type in BrowseSection.allSections.first { $0.type == type } }
-        #else
         let types = store.settings.enabledSections
         var all: [BrowseSection] = types.isEmpty
             ? BrowseSection.defaultSections
@@ -64,7 +58,6 @@ public struct HomeView: View {
             return all.filter { $0.type != .shorts }
         }
         return all
-        #endif
     }
 
     public init(api: InnerTubeAPI) {
@@ -76,8 +69,10 @@ public struct HomeView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            #if !os(tvOS)
             chipBar
             Divider()
+            #endif
             contentArea
                 #if !os(iOS)
                 .navigationDestination(item: $selectedVideo) { video in
@@ -351,7 +346,7 @@ public struct HomeView: View {
     @ViewBuilder
     private var personalTVHomeShelves: some View {
         let paginationTrigger = sectionVM.videoGroups.last?.videos.last
-        let rows = sectionVM.videoGroups.compactMap { group -> VideoGroup? in
+        let filteredRows = sectionVM.videoGroups.compactMap { group -> VideoGroup? in
             var copy = group
             copy.videos = group.videos.filter { video in
                 (!store.settings.hideShorts || !video.isShort)
@@ -360,6 +355,7 @@ public struct HomeView: View {
             }
             return copy.videos.isEmpty ? nil : copy
         }
+        let rows = orderedPersonalTVRows(filteredRows)
 
         if sectionVM.isLoading && rows.isEmpty {
             ProgressView("Loading recommendations…")
@@ -371,14 +367,23 @@ public struct HomeView: View {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, group in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(group.title.flatMap { $0.isEmpty ? nil : $0 } ?? "For you")
-                                .font(.title2.weight(.semibold))
-                                .padding(.horizontal, 48)
-                                .accessibilityAddTraits(.isHeader)
+                            let title = group.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Recommended"
+                            HStack(spacing: 16) {
+                                Image(systemName: personalTVShelfSymbol(for: title))
+                                    .font(.title2.weight(.semibold))
+                                    .frame(width: 44)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityHidden(true)
+                                Text(title)
+                                    .font(.title2.weight(.semibold))
+                            }
+                            .padding(.horizontal, 48)
+                            .accessibilityAddTraits(.isHeader)
 
                             VideoRowSection(
                                 videos: group.videos,
                                 onSelect: { selectVideo($0, from: group.videos) },
+                                cardWidth: 600,
                                 loadMore: index == rows.count - 1
                                     ? {
                                         if let paginationTrigger {
@@ -403,6 +408,49 @@ public struct HomeView: View {
             .refreshable { sectionVM.loadContent(refresh: true, source: "tvHome.refresh") }
             .focusSection()
         }
+    }
+
+    /// Keep Google's personalized order, with "New to you" promoted to the
+    /// second carousel as requested.
+    private func orderedPersonalTVRows(_ rows: [VideoGroup]) -> [VideoGroup] {
+        var result = rows
+
+        if let recommendedIndex = result.firstIndex(where: {
+            personalTVTitle($0, containsAny: ["recommended", "for you", "рекоменд"])
+        }), recommendedIndex != 0 {
+            result.insert(result.remove(at: recommendedIndex), at: 0)
+        }
+
+        if let newIndex = result.firstIndex(where: {
+            personalTVTitle($0, containsAny: [
+                "new to you", "new for you", "recently published",
+                "новое для вас", "недавно опублик"
+            ])
+        }) {
+            let shelf = result.remove(at: newIndex)
+            result.insert(shelf, at: min(1, result.count))
+        }
+
+        return result
+    }
+
+    private func personalTVTitle(_ group: VideoGroup, containsAny needles: [String]) -> Bool {
+        let title = (group.title ?? "").lowercased()
+        return needles.contains { title.contains($0) }
+    }
+
+    private func personalTVShelfSymbol(for title: String) -> String {
+        let value = title.lowercased()
+        if value.contains("new to you") || value.contains("new for you") || value.contains("новое для вас") {
+            return "sparkles"
+        }
+        if value.contains("game") || value.contains("игр") { return "gamecontroller.fill" }
+        if value.contains("space") || value.contains("космос") { return "globe.americas.fill" }
+        if value.contains("physic") || value.contains("физик") { return "atom" }
+        if value.contains("electronic") || value.contains("электроник") { return "cpu.fill" }
+        if value.contains("travel") || value.contains("tourism") || value.contains("туризм") { return "airplane" }
+        if value.contains("news") || value.contains("новост") { return "newspaper.fill" }
+        return "play.rectangle.fill"
     }
     #endif
 

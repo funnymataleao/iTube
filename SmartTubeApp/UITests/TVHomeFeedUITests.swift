@@ -116,14 +116,12 @@ final class TVHomeFeedUITests: XCTestCase {
         XCTAssertTrue(element("home.personalizedShelves").waitForExistence(timeout: 10))
         // The third shelf intentionally starts below the fold; the first two
         // verify the named horizontal-shelf structure is visible on launch.
-        for title in ["For you", "News for you"] {
+        for title in ["Recommended", "New to you"] {
             XCTAssertTrue(app.staticTexts[title].waitForExistence(timeout: 5),
                           "Missing personalized Home shelf: \(title)")
         }
 
-        // Top tab bar → discovery chips → first video in the first shelf.
-        remote.press(.down)
-        Thread.sleep(forTimeInterval: 0.6)
+        // Top tab bar → first video in the Recommended shelf.
         remote.press(.down)
         Thread.sleep(forTimeInterval: 0.6)
         remote.press(.select)

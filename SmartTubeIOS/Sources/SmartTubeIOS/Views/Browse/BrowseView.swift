@@ -300,6 +300,7 @@ struct VideoGridSection: View {
 struct VideoRowSection: View {
     let videos: [Video]
     let onSelect: (Video) -> Void
+    var cardWidth: CGFloat = 360
     var loadMore: (() -> Void)? = nil
 
     var body: some View {
@@ -308,7 +309,7 @@ struct VideoRowSection: View {
                 ForEach(videos) { video in
                     #if os(tvOS)
                     VideoCardView(video: video, compact: false, onSelect: { onSelect(video) })
-                        .frame(width: 360)
+                        .frame(width: cardWidth)
                         .accessibilityIdentifier("video.card.\(video.id)")
                         .onAppear {
                             if video.id == videos.last?.id { loadMore?() }
