@@ -22,6 +22,12 @@ public actor InnerTubeAPI {
     // MARK: - Configuration
 
     let session: URLSession
+    /// Isolated cookie jar for anonymous player clients. Authentication attempts
+    /// can leave the shared YouTube session in a LOGIN_REQUIRED/bot-check state;
+    /// JS-less clients must be seeded from a clean watch-page session instead.
+    let anonymousPlayerSession: URLSession
+    var anonymousVisitorData: String?
+    var anonymousCookieHeader: String?
     var visitorData: String?
     var authToken: String?
     /// SAPISID cookie value from YouTube.com web session (set via OAuthLogin/MergeSession).
@@ -278,6 +284,12 @@ public actor InnerTubeAPI {
         config.timeoutIntervalForResource = 60
         config.waitsForConnectivity = true
         self.session = URLSession(configuration: config)
+        let anonymousConfig = URLSessionConfiguration.ephemeral
+        anonymousConfig.timeoutIntervalForRequest = Self.requestTimeoutInterval
+        anonymousConfig.timeoutIntervalForResource = 60
+        anonymousConfig.waitsForConnectivity = true
+        anonymousConfig.httpShouldSetCookies = true
+        self.anonymousPlayerSession = URLSession(configuration: anonymousConfig)
         self.authToken = authToken
         self.poTokenProvider = poTokenProvider
         // Start observing network path changes so visitorData is cleared on network transitions.
@@ -292,6 +304,7 @@ public actor InnerTubeAPI {
     /// Accepts a custom `URLSession` so tests can inject a mock via `URLProtocol`.
     init(authToken: String?, session: URLSession) {
         self.session = session
+        self.anonymousPlayerSession = session
         self.authToken = authToken
         self.poTokenProvider = nil
     }

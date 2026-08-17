@@ -33,6 +33,11 @@ struct CrashlyticsLogger: Sendable {
     func notice(_ message: @autoclosure () -> String) {
         let msg = message()
         logger.notice("\(msg, privacy: .public)")
+#if os(tvOS)
+        if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+            print("[\(category)] \(msg)")
+        }
+#endif
 #if !os(tvOS)
         Crashlytics.crashlytics().log("[\(category)] \(msg)")
 #endif
@@ -41,6 +46,11 @@ struct CrashlyticsLogger: Sendable {
     func error(_ message: @autoclosure () -> String) {
         let msg = message()
         logger.error("\(msg, privacy: .public)")
+#if os(tvOS)
+        if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+            print("[ERR][\(category)] \(msg)")
+        }
+#endif
 #if !os(tvOS)
         Crashlytics.crashlytics().log("[ERR][\(category)] \(msg)")
 #endif
@@ -49,6 +59,11 @@ struct CrashlyticsLogger: Sendable {
     func debug(_ message: @autoclosure () -> String) {
         let msg = message()
         logger.debug("\(msg, privacy: .public)")
+#if os(tvOS)
+        if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+            print("[DEBUG][\(category)] \(msg)")
+        }
+#endif
         // Not forwarded — too verbose for crash reports
     }
 

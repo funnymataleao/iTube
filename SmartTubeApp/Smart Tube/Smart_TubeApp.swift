@@ -17,6 +17,15 @@ struct SmartTubeTVApp: App {
     /// error at launch.
     @State private var cardDownloadService: VideoDownloadService
 
+    private var diagnosticVideoID: String? {
+        let argumentPrefix = "--uitesting-deeplink-video="
+        let argumentValue = ProcessInfo.processInfo.arguments
+            .first(where: { $0.hasPrefix(argumentPrefix) })
+            .map { String($0.dropFirst(argumentPrefix.count)) }
+        return argumentValue
+            ?? ProcessInfo.processInfo.environment["PLAYBACK_DIAGNOSTIC_VIDEO_ID"]
+    }
+
     init() {
         let settingsStore = SettingsStore()
         if !UserDefaults.standard.bool(forKey: "personalTube.tvOS.didConfigure") {
@@ -44,7 +53,16 @@ struct SmartTubeTVApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            Group {
+                if let diagnosticVideoID {
+                    PlayerView(
+                        video: Video(id: diagnosticVideoID, title: diagnosticVideoID, channelTitle: ""),
+                        api: api
+                    )
+                } else {
+                    RootView()
+                }
+            }
                 .environment(authService)
                 .environment(browseViewModel)
                 .environment(settingsStore)

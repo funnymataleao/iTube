@@ -21,6 +21,7 @@ final class TVSettingsUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
+        app.launchArguments = ["--uitesting-reset-settings"]
         app.launch()
         try openSettings()
     }
@@ -40,6 +41,21 @@ final class TVSettingsUITests: XCTestCase {
             .firstMatch
         guard sentinel.waitForExistence(timeout: 12) else {
             try captureAndSkip("settings.resetAllButton not found — Settings tab did not open", in: app)
+        }
+    }
+
+    private func setting(_ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@", identifier))
+            .firstMatch
+    }
+
+    private func assertSettingsExist(_ identifiers: [String]) {
+        for identifier in identifiers {
+            XCTAssertTrue(
+                setting(identifier).waitForExistence(timeout: 10),
+                "\(identifier) must be in the tvOS Settings accessibility tree"
+            )
         }
     }
 
@@ -103,6 +119,22 @@ final class TVSettingsUITests: XCTestCase {
         )
     }
 
+    /// Playback controls must be reachable together from tvOS Settings.
+    func testPlaybackSettingsExist() {
+        assertSettingsExist([
+            "settings.preferredQualityPicker",
+            "settings.preferredAudioLanguageRow",
+            "settings.preferredSubtitleLanguageRow",
+            "settings.autoplayToggle",
+            "settings.loopToggle",
+            "settings.shuffleToggle",
+            "settings.seekBackRow",
+            "settings.seekForwardRow",
+            "settings.controlsHideTimeoutPicker",
+            "settings.videoGravityPicker",
+        ])
+    }
+
     /// The Seek Back picker must be in the accessibility tree on tvOS.
     func testSeekBackRowExists() {
         let row = app.descendants(matching: .any)
@@ -112,6 +144,28 @@ final class TVSettingsUITests: XCTestCase {
             row.waitForExistence(timeout: 10),
             "settings.seekBackRow must be in the accessibility tree on tvOS"
         )
+    }
+
+    /// Content filters are meaningful on tvOS only when they can be reached from
+    /// Settings and are separately exposed to VoiceOver.
+    func testContentSettingsExist() {
+        assertSettingsExist([
+            "settings.sponsorBlockToggle",
+            "settings.deArrowToggle",
+            "settings.hideShortsToggle",
+            "settings.hideLiveShortsToggle",
+            "settings.hideVideoPremieresToggle",
+        ])
+    }
+
+    func testInterfaceAndDataSettingsExist() {
+        assertSettingsExist([
+            "settings.themeRow",
+            "settings.visibleSectionsLink",
+            "settings.preferH264Toggle",
+            "settings.historyPicker",
+            "settings.iCloudSyncToggle",
+        ])
     }
 
     /// The Reset All Settings button must be in the accessibility tree.

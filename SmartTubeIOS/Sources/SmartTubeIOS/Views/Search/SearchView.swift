@@ -69,9 +69,9 @@ public struct SearchView: View {
                 vm.applyFilter(newFilter)
             }
         }
-        .task(id: vm.query) { await vm.updateSuggestions(for: vm.query) }
+        // .task(id: vm.query) { await vm.updateSuggestions(for: vm.query) }
         .onChange(of: isSearchFocused) { _, focused in
-            if focused { Task { await vm.updateSuggestions(for: vm.query) } }
+            // if focused { Task { await vm.updateSuggestions(for: vm.query) } }
         }
     }
 
@@ -79,6 +79,9 @@ public struct SearchView: View {
 
     private var searchBar: some View {
         @Bindable var vm = vm
+        #if os(tvOS)
+        return tvOSSearchBar
+        #else
         return HStack(spacing: 8) {
             Image(systemName: AppSymbol.search)
                 .foregroundStyle(.secondary)
@@ -87,9 +90,7 @@ public struct SearchView: View {
                 .submitLabel(.search)
                 .autocorrectionDisabled()
                 .accessibilityIdentifier("search.bar")
-                #if os(iOS)
                 .textInputAutocapitalization(.never)
-                #endif
                 .onSubmit { vm.search(); isSearchFocused = false }
             if !vm.query.isEmpty {
                 Button {
@@ -114,7 +115,61 @@ public struct SearchView: View {
         .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
         .padding(.horizontal)
         .padding(.vertical, 8)
+        #endif
     }
+    
+    #if os(tvOS)
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    
+    private var tvOSSearchBar: some View {
+        @Bindable var vm = vm
+        return HStack(spacing: 12) {
+            TextField("Search YouTube", text: $vm.query)
+                .font(.headline)
+                .textFieldStyle(.plain)
+                .focused($isSearchFocused)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("search.bar")
+                .onSubmit { vm.search(); isSearchFocused = false }
+                .focusEffectDisabled()
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .background {
+                    if #available(tvOS 26.0, *), !reduceTransparency {
+                        Capsule().glassEffect(.regular.interactive())
+                    } else if reduceTransparency {
+                        Capsule().fill(Color.white.opacity(0.12))
+                    } else {
+                        Capsule().fill(.ultraThinMaterial)
+                    }
+                }
+            
+            Button {
+                showFilterSheet = true
+            } label: {
+                Image(systemName: vm.filter.isDefault ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(vm.filter.isDefault ? .secondary : Color.accentColor)
+                    .padding(16)
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .background {
+                if #available(tvOS 26.0, *), !reduceTransparency {
+                    Circle().glassEffect(.regular)
+                } else if reduceTransparency {
+                    Circle().fill(Color.white.opacity(0.12))
+                } else {
+                    Circle().fill(.ultraThinMaterial)
+                }
+            }
+            .accessibilityIdentifier("search.filterButton")
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+    #endif
 
     // MARK: - Active filter chips
 
@@ -196,7 +251,7 @@ public struct SearchView: View {
     // MARK: - Suggestions list (history + recommended/live)
 
     private var suggestionsListView: some View {
-        let suggestionsHeader = vm.query.isEmpty ? "Recommended" : "Suggestions"
+        let _ = vm.query.isEmpty ? "Recommended" : "Suggestions"
         return List {
             // History section — only shown when there are matching entries
             if !vm.filteredHistory.isEmpty {
@@ -243,34 +298,34 @@ public struct SearchView: View {
             }
 
             // Suggestions / Recommended section (existing behaviour)
-            Section(header: Text(suggestionsHeader).font(.caption).foregroundStyle(.secondary)) {
-                ForEach(vm.suggestions, id: \.self) { suggestion in
-                    Button {
-                        vm.query = suggestion
-                        vm.search()
-                        isSearchFocused = false
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: AppSymbol.search)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 20)
-                            Text(suggestion)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Button {
-                                vm.query = suggestion
-                            } label: {
-                                Image(systemName: "arrow.up.left")
-                                    .foregroundStyle(.secondary)
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+            // Section(header: Text(suggestionsHeader).font(.caption).foregroundStyle(.secondary)) {
+            //     ForEach(vm.suggestions, id: \.self) { suggestion in
+            //         Button {
+            //             vm.query = suggestion
+            //             vm.search()
+            //             isSearchFocused = false
+            //         } label: {
+            //                         //             HStack(spacing: 12) {
+            //                 Image(systemName: AppSymbol.search)
+            //                     .foregroundStyle(.secondary)
+            //                     .frame(width: 20)
+            //                 Text(suggestion)
+            //                     .foregroundStyle(.primary)
+            //                 Spacer()
+            //                 Button {
+            //                     vm.query = suggestion
+            //                 } label: {
+            //                     Image(systemName: "arrow.up.left")
+            //                         .foregroundStyle(.secondary)
+            //                         .font(.caption)
+            //                 }
+            //                 .buttonStyle(.plain)
+            //             }
+            //             .contentShape(Rectangle())
+            //         }
+            //         .buttonStyle(.plain)
+            //     }
+            // }
         }
         .listStyle(.plain)
         .accessibilityIdentifier("search.suggestionsContainer")
@@ -352,6 +407,63 @@ struct SearchFilterSheet: View {
     }
 
     var body: some View {
+        #if os(tvOS)
+        NavigationStack {
+            List {
+                Section("Sort by") {
+                    Picker("Sort", selection: $draft.sortOrder) {
+                        ForEach(SearchFilter.SortOrder.allCases, id: \.self) { order in
+                            Text(LocalizedStringKey(order.label)).tag(order)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+
+                Section("Upload date") {
+                    Picker("Upload date", selection: $draft.uploadDate) {
+                        ForEach(SearchFilter.UploadDate.allCases, id: \.self) { date in
+                            Text(LocalizedStringKey(date.label)).tag(date)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+
+                Section(String(localized: "search.filter.type", bundle: .module)) {
+                    Picker(String(localized: "search.filter.type", bundle: .module), selection: $draft.type) {
+                        ForEach(SearchFilter.VideoType.allCases, id: \.self) { type in
+                            Text(LocalizedStringKey(type.label)).tag(type)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+
+                Section("Duration") {
+                    Picker("Duration", selection: $draft.duration) {
+                        ForEach(SearchFilter.Duration.allCases, id: \.self) { dur in
+                            Text(LocalizedStringKey(dur.label)).tag(dur)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+            .navigationTitle("Search filters")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply") {
+                        onApply(draft)
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Reset") { draft = .default }
+                        .disabled(draft.isDefault)
+                }
+            }
+        }
+        #else
         NavigationStack {
             Form {
                 Section("Sort by") {
@@ -395,9 +507,7 @@ struct SearchFilterSheet: View {
                 }
             }
             .navigationTitle("Search filters")
-            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -408,15 +518,13 @@ struct SearchFilterSheet: View {
                         dismiss()
                     }
                 }
-                #if os(iOS)
                 ToolbarItem(placement: .bottomBar) {
                     Button("Reset") { draft = .default }
                         .disabled(draft.isDefault)
                 }
-                #endif
             }
+            .presentationDetents([.medium, .large])
         }
-        .presentationDetents([.medium, .large])
-        .accessibilityIdentifier("search.filterSheet")
+        #endif
     }
 }

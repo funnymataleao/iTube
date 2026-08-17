@@ -152,6 +152,9 @@ extension PlaybackViewModel {
             history.append(prev)
         }
         currentVideo = video
+        isInWatchLater = video.playlistId == "WL"
+        isUpdatingWatchLater = false
+        updateSubscriptionState()
         // fix236: Record the intended video at load() time so checkWrongVideoOnFirstPlay()
         // can detect if a stale task swaps currentVideo before readyToPlay fires.
         intendedVideoId = video.id
@@ -468,7 +471,8 @@ extension PlaybackViewModel {
                 }
                 player.replaceCurrentItem(with: item)
                 endObserverTask?.cancel()
-                endObserverTask = Task { [weak self] in
+                endObserverTask = Task { [weak self, weak item] in
+                    guard let item else { return }
                     let notifications = NotificationCenter.default.notifications(
                         named: AVPlayerItem.didPlayToEndTimeNotification,
                         object: item
@@ -479,7 +483,8 @@ extension PlaybackViewModel {
                     }
                 }
                 stallObserverTask?.cancel()
-                stallObserverTask = Task { @MainActor [weak self] in
+                stallObserverTask = Task { @MainActor [weak self, weak item] in
+                    guard let item else { return }
                     let notifications = NotificationCenter.default.notifications(
                         named: AVPlayerItem.playbackStalledNotification,
                         object: item

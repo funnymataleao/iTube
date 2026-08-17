@@ -36,7 +36,7 @@ public final class BrowseViewModel {
     /// True while a pagination (loadMore) request is in flight. Distinct from `isLoading`,
     /// which covers the initial/refresh fetch. Keeping these separate prevents the preload
     /// cache work that follows the initial fetch from blocking subsequent loadMore calls.
-    private var isLoadingMore: Bool = false
+    public private(set) var isLoadingMore: Bool = false
     /// Shelves currently fetching their own horizontal continuation page.
     /// Each Home carousel paginates independently from the vertical Home feed.
     private var loadingHomeShelfIDs: Set<UUID> = []
@@ -226,11 +226,29 @@ public final class BrowseViewModel {
         else {
             let hasToken = videoGroups.last?.nextPageToken != nil
             let lastVideoInGroup = videoGroups.last?.videos.contains(where: { $0.id == lastVideo.id }) == true
+            print("📊 loadMoreIfNeeded SKIPPED: hasToken=\(hasToken) lastVideoInGroup=\(lastVideoInGroup) isLoadingMore=\(isLoadingMore)")
             browseLog.notice("loadMore skipped: section=\(currentSection.title) isLoading=\(isLoading) isLoadingMore=\(isLoadingMore) hasToken=\(hasToken) lastVideoMatch=\(lastVideoInGroup)")
             return
         }
+        print("📊 loadMoreIfNeeded TRIGGERED: loading next page...")
         browseLog.notice("loadMore triggered: section=\(currentSection.title) currentCount=\(videoGroups.first?.videos.count ?? 0)")
         isLoadingMore = true  // synchronous guard — prevents duplicate pagination tasks before the Task body runs
+        fetchTask = Task { await fetchNextPage(for: currentSection) }
+    }
+
+    /// Loads the next vertical page of personalized Home shelves when the bottom
+    /// of the tvOS feed becomes visible. This must not depend on reaching the end
+    /// of a horizontal carousel: vertical and horizontal continuations are
+    /// independent in the YouTube TV response.
+    public func loadMoreHomeRowsIfNeeded() {
+        guard currentSection.type == .home,
+              videoGroups.last?.nextPageToken != nil,
+              !isLoading,
+              !isLoadingMore
+        else { return }
+
+        browseLog.notice("Home vertical pagination triggered: shelves=\(self.videoGroups.count)")
+        isLoadingMore = true
         fetchTask = Task { await fetchNextPage(for: currentSection) }
     }
 
@@ -375,6 +393,16 @@ public final class BrowseViewModel {
             case .home:
                 let rows = try await api.fetchHomeRows()
                 if !Task.isCancelled {
+                    // 🔍 DIAGNOSTIC: Log raw data from YouTube API (stdout for devicectl)
+                    print("📊 DIAGNOSTIC: FEwhat_to_watch response analysis")
+                    print("📊 Total shelves received from YouTube: \(rows.count)")
+                    for (index, group) in rows.enumerated() {
+                        let shortsCount = group.videos.filter { $0.isShort }.count
+                        let regularCount = group.videos.count - shortsCount
+                        let title = group.title ?? "<no title>"
+                        print("📊 Shelf[\(index)]: '\(title)' | total=\(group.videos.count) | shorts=\(shortsCount) | regular=\(regularCount) | layout=\(String(describing: group.layout))")
+                    }
+                    
                     if rows.flatMap({ $0.videos }).isEmpty {
                         isAuthRequired = true
                         let popular = try await api.search(query: "popular")
@@ -383,15 +411,26 @@ public final class BrowseViewModel {
                         videoGroups = [deduped]
                     } else {
                         isAuthRequired = false
-                        // Deduplicate only inside each shelf. A video may legitimately
-                        // appear in several personalized topics; removing it globally
-                        // makes later carousels look almost empty.
-                        let dedupedRows = rows.map { row -> VideoGroup in
-                            var copy = row
-                            var seen = Set<String>()
-                            copy.videos = row.videos.filter { seen.insert($0.id).inserted }
-                            return copy
-                        }.filter { !$0.videos.isEmpty }
+                        // The same recommendation can be returned in several named
+                        // shelves. Keep it only at its first appearance so Home does not
+                        // become a visual repetition of the opening carousel.
+                        let dedupedRows = deduplicatedHomeRows(rows)
+                        
+                        // 🔍 DIAGNOSTIC: Log after deduplication (stdout for devicectl)
+                        print("📊 After deduplication: \(dedupedRows.count) shelves")
+                        for (index, group) in dedupedRows.enumerated() {
+                            let shortsCount = group.videos.filter { $0.isShort }.count
+                            let regularCount = group.videos.count - shortsCount
+                            let title = group.title ?? "<no title>"
+                            print("📊 Deduped[\(index)]: '\(title)' | total=\(group.videos.count) | shorts=\(shortsCount) | regular=\(regularCount)")
+                            if let token = group.nextPageToken {
+                                print("📊   - nextPageToken: \(String(token.prefix(50)))")
+                            }
+                            if let token = group.rowContinuationToken {
+                                print("📊   - rowContinuationToken: \(String(token.prefix(50)))")
+                            }
+                        }
+                        
                         videoGroups = dedupedRows
                     }
                 }
@@ -564,24 +603,37 @@ public final class BrowseViewModel {
                 if Task.isCancelled {
                     browseLog.notice("fetchNextPage cancelled: section=\(section.title)")
                 } else {
-                    let filteredRows = newRows.map { row -> VideoGroup in
-                        var copy = row
-                        // Only compare against an earlier shelf with the same title.
-                        // Different personalized topics are allowed to overlap.
-                        let matchingIds = videoGroups
-                            .filter { existing in
-                                guard let lhs = existing.title, let rhs = row.title else { return false }
-                                return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedSame
-                            }
-                            .flatMap(\.videos)
-                            .map(\.id)
-                        var seen = Set(matchingIds)
-                        copy.videos = row.videos.filter { seen.insert($0.id).inserted }
-                        return copy
-                    }.filter { !$0.videos.isEmpty }
+                    let nextPageToken = newRows.last(where: { $0.nextPageToken != nil })?.nextPageToken
+                    let existingIDs = Set(videoGroups.flatMap(\.videos).map(\.id))
+                    var filteredRows = deduplicatedHomeRows(newRows, excluding: existingIDs)
+
+                    // The parser attaches the vertical continuation to the last raw
+                    // row. Deduplication can remove that row, so explicitly move the
+                    // token to the last row that will actually be retained. The old
+                    // token has already been consumed and must never remain attached
+                    // to the previous page.
+                    if let lastIndex = videoGroups.indices.last {
+                        videoGroups[lastIndex].nextPageToken = nil
+                    }
+                    if !filteredRows.isEmpty {
+                        filteredRows[filteredRows.count - 1].nextPageToken = nextPageToken
+                    }
+
                     let count = filteredRows.flatMap(\.videos).count
-                    browseLog.notice("fetchNextPage success: section=\(section.title) newVideos=\(count) nextToken=\(newRows.last?.nextPageToken != nil)")
+                    browseLog.notice("fetchNextPage success: section=\(section.title) newVideos=\(count) nextToken=\(nextPageToken != nil)")
                     videoGroups.append(contentsOf: filteredRows)
+
+                    if filteredRows.isEmpty, let nextPageToken {
+                        // A page made entirely of duplicates should not terminate the
+                        // vertical feed. Advance through a small bounded number of such
+                        // pages so the bottom sentinel can reach fresh shelves.
+                        if let lastIndex = videoGroups.indices.last {
+                            videoGroups[lastIndex].nextPageToken = nextPageToken == token ? nil : nextPageToken
+                        }
+                        if nextPageToken != token, autoChainDepth < 3 {
+                            await fetchNextPage(for: section, autoChainDepth: autoChainDepth + 1)
+                        }
+                    }
                 }
             case .recommended:
                 if recommendedUsesSearchFallback {
@@ -748,6 +800,20 @@ public final class BrowseViewModel {
     private func deduplicated(_ videos: [Video]) -> [Video] {
         var seen = Set<String>()
         return videos.filter { seen.insert($0.id).inserted }
+    }
+
+    /// Removes duplicate recommendations across the complete personalized Home feed,
+    /// preserving the server's first shelf and item order.
+    private func deduplicatedHomeRows(
+        _ rows: [VideoGroup],
+        excluding initialIDs: Set<String> = []
+    ) -> [VideoGroup] {
+        var seen = initialIDs
+        return rows.compactMap { row in
+            var copy = row
+            copy.videos = row.videos.filter { seen.insert($0.id).inserted }
+            return copy.videos.isEmpty ? nil : copy
+        }
     }
 
     // MARK: - Channel avatar enrichment

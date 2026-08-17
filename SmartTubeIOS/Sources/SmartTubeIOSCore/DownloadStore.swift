@@ -122,16 +122,14 @@ public final class DownloadStore {
         // percent-encoding. For standard YouTube IDs these are identical, but migrate
         // any edge-case entries by trying the new path before dropping them.
         let fm = FileManager.default
-        var migrated: [DownloadedVideo] = []
-        for entry in decoded {
+        let migrated: [DownloadedVideo] = decoded.compactMap { entry in
             if fm.fileExists(atPath: entry.fileURL.path) {
-                migrated.append(entry)
+                return entry
             } else {
                 let newURL = destinationURL(for: entry.videoId)
                 if fm.fileExists(atPath: newURL.path) {
-                    var updated = entry
                     // DownloadedVideo is a struct — recreate with the corrected fileURL.
-                    let corrected = DownloadedVideo(
+                    return DownloadedVideo(
                         videoId: entry.videoId,
                         title: entry.title,
                         channelTitle: entry.channelTitle,
@@ -140,10 +138,9 @@ public final class DownloadStore {
                         fileURL: newURL,
                         downloadedAt: entry.downloadedAt
                     )
-                    _ = updated  // silence unused warning
-                    migrated.append(corrected)
                 }
                 // If neither path exists, the file was deleted — drop the entry.
+                return nil
             }
         }
         entries = migrated

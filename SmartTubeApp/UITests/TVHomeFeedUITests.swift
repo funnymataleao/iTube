@@ -71,7 +71,8 @@ final class TVHomeFeedUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["Sign In"].waitForExistence(timeout: 10))
 
-        // Home → Subscriptions → Search.
+        // Home → Subscriptions → History → Search.
+        remote.press(.right)
         remote.press(.right)
         remote.press(.right)
         remote.press(.select)

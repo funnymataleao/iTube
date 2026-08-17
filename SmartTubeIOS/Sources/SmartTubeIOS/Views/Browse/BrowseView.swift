@@ -62,7 +62,9 @@ public struct BrowseView: View {
         .onAppear {
             if vm.videoGroups.isEmpty { vm.loadContent() }
         }
+        #if !os(tvOS)
         .refreshable { vm.loadContent(refresh: true) }
+        #endif
     }
 
     // MARK: - Subviews
@@ -221,8 +223,15 @@ struct VideoGridSection: View {
     let videos: [Video]
     let onSelect: (Video) -> Void
     var loadMore: (() -> Void)? = nil
+    #if os(tvOS)
+    var restoreFocusedVideoID: String? = nil
+    var onFocusRestored: ((String) -> Void)? = nil
+    #endif
 
     @Environment(SettingsStore.self) private var store
+    #if os(tvOS)
+    @FocusState private var focusedVideoID: String?
+    #endif
     #if !os(tvOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// Rotated on every UIDevice orientation change so `.id(orientationToken)` forces
@@ -281,6 +290,8 @@ struct VideoGridSection: View {
                             VideoCardView(video: video, compact: false, onSelect: { onSelect(video) })
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .accessibilityIdentifier("video.card.\(video.id)")
+                                .id(video.id)
+                                .focused($focusedVideoID, equals: video.id)
                         }
                         let remainder = columnCount - rowVideos.count
                         if remainder > 0 {
@@ -299,6 +310,19 @@ struct VideoGridSection: View {
             .padding(.vertical, 8)
             #if os(tvOS)
             .focusSection()
+            // Entering a three-column grid from Search used to preserve the
+            // horizontal position of the filter control and land on card 3.
+            // User-initiated entry must start at the leading result instead.
+            .defaultFocus($focusedVideoID, videos.first?.id, priority: .userInitiated)
+            .onChange(of: restoreFocusedVideoID, initial: true) { _, videoID in
+                guard let videoID, videos.contains(where: { $0.id == videoID }) else { return }
+                // Wait until the containing vertical ScrollView has brought the
+                // target row back on-screen, then hand focus to the exact card.
+                DispatchQueue.main.async {
+                    focusedVideoID = videoID
+                    onFocusRestored?(videoID)
+                }
+            }
             #endif
             #else
             let columns = horizontalSizeClass == .compact ? compactVideoGridColumns : regularVideoGridColumns
@@ -334,12 +358,17 @@ struct VideoRowSection: View {
     let onSelect: (Video) -> Void
     var cardWidth: CGFloat = 360
     var loadMore: (() -> Void)? = nil
-
     #if os(tvOS)
-    @Namespace private var rowFocusScope
+    var restoreFocusedVideoID: String? = nil
+    var onFocusRestored: ((String) -> Void)? = nil
     #endif
 
-    var body: some View {
+    #if os(tvOS)
+    @FocusState private var focusedVideoID: String?
+    #endif
+
+    @ViewBuilder
+    private var horizontalScroll: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Group {
             #if os(tvOS)
@@ -352,10 +381,8 @@ struct VideoRowSection: View {
                     VideoCardView(video: video, compact: false, onSelect: { onSelect(video) })
                         .frame(width: cardWidth)
                         .accessibilityIdentifier("video.card.\(video.id)")
-                        // Each shelf is its own focus scope. When focus enters it
-                        // vertically, tvOS starts at the leading card instead of
-                        // preserving the horizontal position from the shelf above.
-                        .prefersDefaultFocus(video.id == videos.first?.id, in: rowFocusScope)
+                        .id(video.id)
+                        .focused($focusedVideoID, equals: video.id)
                         .onAppear {
                             if video.id == videos.last?.id { loadMore?() }
                         }
@@ -380,10 +407,31 @@ struct VideoRowSection: View {
             .padding(.top, 22)
             .padding(.bottom, 26)
         }
+    }
+
+    var body: some View {
         #if os(tvOS)
-        .scrollClipDisabled()
-        .focusScope(rowFocusScope)
-        .focusSection()
+        ScrollViewReader { proxy in
+            horizontalScroll
+                .scrollClipDisabled()
+                .focusSection()
+                // `.automatic` ignores the default during a user-initiated Siri Remote
+                // move and preserves the X position from the previous shelf. Explicitly
+                // prioritize the leading card whenever focus enters this row vertically.
+                .defaultFocus($focusedVideoID, videos.first?.id, priority: .userInitiated)
+                .onChange(of: restoreFocusedVideoID, initial: true) { _, videoID in
+                    guard let videoID, videos.contains(where: { $0.id == videoID }) else { return }
+                    // The parent restores the vertical shelf first. One run-loop
+                    // later, restore this shelf's horizontal position and focus.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(videoID, anchor: .center)
+                        focusedVideoID = videoID
+                        onFocusRestored?(videoID)
+                    }
+                }
+        }
+        #else
+        horizontalScroll
         #endif
     }
 }

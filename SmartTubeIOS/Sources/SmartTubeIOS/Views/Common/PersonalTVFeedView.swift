@@ -13,6 +13,8 @@ struct PersonalTVFeedView: View {
     @State private var selectedVideo: Video?
     @State private var channelDestination: ChannelDestination?
     @State private var showSignIn = false
+    @State private var playbackReturnVideoID: String?
+    @State private var restoreFocusedVideoID: String?
 
     @Environment(AuthService.self) private var auth
     @Environment(SettingsStore.self) private var store
@@ -42,21 +44,44 @@ struct PersonalTVFeedView: View {
                     description: Text("Pull to refresh or try again later.")
                 )
             } else {
-                ScrollView {
-                    VideoGridSection(
-                        videos: videos,
-                        onSelect: { selectedVideo = $0 },
-                        loadMore: {
-                            if let last = videos.last {
-                                viewModel.loadMoreIfNeeded(lastVideo: last)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VideoGridSection(
+                            videos: videos,
+                            onSelect: { video in
+                                playbackReturnVideoID = video.id
+                                restoreFocusedVideoID = nil
+                                selectedVideo = video
+                            },
+                            loadMore: {
+                                if let last = videos.last {
+                                    viewModel.loadMoreIfNeeded(lastVideo: last)
+                                }
+                            },
+                            restoreFocusedVideoID: restoreFocusedVideoID,
+                            onFocusRestored: { videoID in
+                                if restoreFocusedVideoID == videoID {
+                                    restoreFocusedVideoID = nil
+                                }
                             }
+                        )
+                        if viewModel.isLoading {
+                            ProgressView().padding(32)
                         }
-                    )
-                    if viewModel.isLoading {
-                        ProgressView().padding(32)
+                    }
+                    .onChange(of: selectedVideo?.id) { previousVideoID, currentVideoID in
+                        guard previousVideoID != nil,
+                              currentVideoID == nil,
+                              let videoID = playbackReturnVideoID,
+                              videos.contains(where: { $0.id == videoID })
+                        else { return }
+
+                        proxy.scrollTo(videoID, anchor: .center)
+                        DispatchQueue.main.async {
+                            restoreFocusedVideoID = videoID
+                        }
                     }
                 }
-                .refreshable { viewModel.reload(section: section) }
             }
         }
         .toolbar(.hidden, for: .navigationBar)

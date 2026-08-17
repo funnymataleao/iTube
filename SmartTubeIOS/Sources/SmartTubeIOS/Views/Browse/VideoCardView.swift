@@ -8,6 +8,7 @@ import CoreImage
 
 private let focusLog = Logger(subsystem: "com.smarttube", category: "focus")
 private let feedLog  = Logger(subsystem: "com.smarttube", category: "feed")
+private let thumbLog = Logger(subsystem: "com.smarttube", category: "thumbnail")
 
 #if os(tvOS)
 /// A small, Sendable color payload derived from the lower part of a thumbnail.
@@ -537,10 +538,11 @@ public struct VideoCardView: View {
     #if os(tvOS)
     private var tvCardLayout: some View {
         let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
-        return ZStack(alignment: .bottomLeading) {
-            thumbnailView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+        return GeometryReader { proxy in
+            ZStack(alignment: .bottomLeading) {
+                thumbnailView
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
 
             // A quiet top vignette protects badges without flattening the artwork.
             LinearGradient(
@@ -608,42 +610,37 @@ public struct VideoCardView: View {
             .padding(.top, 18)
             .padding(.bottom, 20)
 
-            if video.isLive {
-                tvLiveBadge
-                    .padding(18)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
+                if video.isLive {
+                    tvLiveBadge
+                        .padding(18)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
 
-            if let progress = effectiveProgress, progress > 0 {
-                watchProgressBar(progress)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
+                if let progress = effectiveProgress, progress > 0 {
+                    watchProgressBar(progress)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .background(artworkTone.color)
+            .clipShape(shape)
+            .overlay {
+                // Subtle glass specular highlight: visible primarily on focus, minimal when resting.
+                shape.stroke(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(isFocused ? 0.85 : 0.12),
+                            .white.opacity(isFocused ? 0.30 : 0.04),
+                            .clear,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: isFocused ? 2.0 : 1.0
+                )
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .aspectRatio(16 / 9, contentMode: .fit)
-        .background(artworkTone.color)
-        .clipShape(shape)
-        .overlay {
-            // Two restrained highlights create the polished glass edge from the
-            // reference without turning the whole content card into a glass panel.
-            shape.stroke(
-                LinearGradient(
-                    colors: [
-                        .white.opacity(isFocused ? 0.82 : 0.48),
-                        .white.opacity(isFocused ? 0.28 : 0.13),
-                        .black.opacity(0.34),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                lineWidth: isFocused ? 2.2 : 1.15
-            )
-        }
-        .overlay {
-            shape
-                .inset(by: 2)
-                .stroke(.white.opacity(isFocused ? 0.14 : 0.065), lineWidth: 1)
-        }
         .contentShape(shape)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(cardAccessibilityLabel)
@@ -852,12 +849,39 @@ public struct VideoCardView: View {
         return video.title
     }
 
-    private var activeThumbnailURL: URL? {
-        let fallbacks = video.thumbnailFallbackURLs
-        if thumbnailFallbackIndex < 0 {
-            return deArrowThumbnailURL ?? video.thumbnailURL ?? fallbacks.first
+    /// Ordered image candidates for a card. On Apple TV a 650-point card makes
+    /// YouTube's frequently supplied 320–640px artwork visibly pixelated, so normal
+    /// videos always ask for the native 720p assets before accepting the response image.
+    /// Playlist/channel/Shorts artwork keeps its response URL first because it does not
+    /// necessarily have a `vi/<id>` 16:9 image.
+    private var thumbnailCandidates: [URL] {
+        let staticURLs = video.thumbnailFallbackURLs
+        let isStandardVideo = !video.isShort
+            && video.id.count == 11
+            && video.id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+
+        var candidates: [URL] = []
+        if let deArrowThumbnailURL { candidates.append(deArrowThumbnailURL) }
+
+        if isStandardVideo {
+            // maxresdefault/hq720 are both 1280×720 when present.
+            candidates.append(contentsOf: staticURLs.prefix(2))
         }
-        return thumbnailFallbackIndex < fallbacks.count ? fallbacks[thumbnailFallbackIndex] : nil
+        if let responseURL = video.thumbnailURL { candidates.append(responseURL) }
+        if isStandardVideo {
+            candidates.append(contentsOf: staticURLs.dropFirst(2))
+        } else {
+            candidates.append(contentsOf: staticURLs)
+        }
+
+        var seen = Set<String>()
+        return candidates.filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    private var activeThumbnailURL: URL? {
+        guard thumbnailFallbackIndex >= 0 else { return thumbnailCandidates.first }
+        let candidates = thumbnailCandidates
+        return thumbnailFallbackIndex < candidates.count ? candidates[thumbnailFallbackIndex] : nil
     }
 
     @ViewBuilder
@@ -865,19 +889,16 @@ public struct VideoCardView: View {
         if video.thumbnailURL == nil, video.id == "WL" || video.id == "LL" {
             systemPlaylistThumbnail
         } else {
-            // Walk a fallback chain on each successive failure:
-            //   -1 → deArrowThumbnailURL (community thumbnail) or thumbnailURL (API-provided)
-            //    0 → sddefault.jpg  (640×480, available for most videos)
-            //    1 → hqdefault.jpg  (480×360, always available)
-            //    2 → mqdefault.jpg  (320×180, always available — last resort)
-            let fallbacks = video.thumbnailFallbackURLs
+            // Standard video cards try maxresdefault/hq720 before a response-supplied
+            // low-resolution source. Non-video artwork retains its original URL first.
+            let candidates = thumbnailCandidates
             AsyncImage(url: activeThumbnailURL) { phase in
                 switch phase {
                 case .success(let img):
                     img.resizable().scaledToFill()
                 case .failure:
                     let nextIndex = thumbnailFallbackIndex + 1
-                    if nextIndex < fallbacks.count {
+                    if nextIndex < candidates.count {
                         placeholderThumbnail
                             .onAppear { thumbnailFallbackIndex = nextIndex }
                     } else {

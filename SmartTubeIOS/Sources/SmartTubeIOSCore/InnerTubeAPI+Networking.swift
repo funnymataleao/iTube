@@ -40,6 +40,23 @@ extension InnerTubeAPI {
     /// youtube.com cookies and exposes visitorData required to avoid false
     /// `LOGIN_REQUIRED` bot-detection responses on otherwise public videos.
     func seedVisionOSSession(videoId: String) async {
+        #if os(tvOS)
+        let diagnosticEnvironment = ProcessInfo.processInfo.environment
+        if let trustedVisitor = diagnosticEnvironment["PLAYBACK_TRUSTED_VISITOR"],
+           let trustedCookie = diagnosticEnvironment["PLAYBACK_TRUSTED_COOKIE"],
+           !trustedVisitor.isEmpty,
+           !trustedCookie.isEmpty {
+            visitorData = trustedVisitor
+            anonymousVisitorData = trustedVisitor
+            anonymousCookieHeader = trustedCookie
+            if diagnosticEnvironment["PLAYBACK_DIAGNOSTIC_VIDEO_ID"] != nil
+                || ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+                print("[InnerTube] Using externally seeded trusted anonymous session")
+            }
+            return
+        }
+        #endif
+
         var components = URLComponents(string: "https://www.youtube.com/watch")!
         components.queryItems = [
             URLQueryItem(name: "v", value: videoId),
@@ -48,6 +65,10 @@ extension InnerTubeAPI {
         ]
         guard let url = components.url else { return }
 
+        let cookieStorage = anonymousPlayerSession.configuration.httpCookieStorage
+        for cookie in cookieStorage?.cookies ?? [] where cookie.domain.contains("youtube.com") {
+            cookieStorage?.deleteCookie(cookie)
+        }
         if let consentCookie = HTTPCookie(properties: [
             .domain: ".youtube.com",
             .path: "/",
@@ -56,21 +77,58 @@ extension InnerTubeAPI {
             .secure: true,
             .expires: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60),
         ]) {
-            HTTPCookieStorage.shared.setCookie(consentCookie)
+            cookieStorage?.setCookie(consentCookie)
         }
 
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
                                  timeoutInterval: 15)
         request.setValue(InnerTubeClients.WebSafari.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-        guard let (data, response) = try? await session.data(for: request),
+        request.setValue("SOCS=CAI", forHTTPHeaderField: "Cookie")
+        guard let (data, response) = try? await anonymousPlayerSession.data(for: request),
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),
-              let html = String(data: data, encoding: .utf8) else { return }
+              let html = String(data: data, encoding: .utf8) else {
+            #if os(tvOS)
+            if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+                print("[InnerTube] VisionOS anonymous watch-page seed failed")
+            }
+            #endif
+            return
+        }
+
+        let headerFields = http.allHeaderFields.reduce(into: [String: String]()) { result, entry in
+            guard let key = entry.key as? String else { return }
+            result[key] = String(describing: entry.value)
+        }
+        let responseCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
+        let storedCookies = cookieStorage?.cookies(for: url) ?? []
+        var cookiesByName: [String: HTTPCookie] = [:]
+        for cookie in storedCookies + responseCookies {
+            cookiesByName[cookie.name] = cookie
+        }
+        if let consentCookie = HTTPCookie(properties: [
+            .domain: ".youtube.com",
+            .path: "/",
+            .name: "SOCS",
+            .value: "CAI",
+            .secure: true,
+        ]) {
+            cookiesByName[consentCookie.name] = consentCookie
+        }
+        anonymousCookieHeader = HTTPCookie.requestHeaderFields(
+            with: Array(cookiesByName.values)
+        )["Cookie"]
 
         if let value = extractYouTubeVisitorData(from: html) {
             visitorData = value
+            anonymousVisitorData = value
             tubeLog.notice("VisionOS session seeded (visitorData len=\(value.count, privacy: .public))")
+            #if os(tvOS)
+            if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+                print("[InnerTube] VisionOS anonymous session seeded visitor_len=\(value.count) cookies=\(cookiesByName.keys.sorted())")
+            }
+            #endif
             return
         }
         tubeLog.notice("VisionOS session watch page loaded without visitorData")
@@ -349,11 +407,14 @@ extension InnerTubeAPI {
         request.setValue(InnerTubeClients.VisionOS.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(InnerTubeClients.VisionOS.nameID, forHTTPHeaderField: "X-YouTube-Client-Name")
         request.setValue(InnerTubeClients.VisionOS.version, forHTTPHeaderField: "X-YouTube-Client-Version")
-        if let vd = visitorData {
+        if let vd = anonymousVisitorData {
             request.setValue(vd, forHTTPHeaderField: "X-Goog-Visitor-Id")
         }
+        if let cookieHeader = anonymousCookieHeader {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await anonymousPlayerSession.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw APIError.httpError(statusCode)
@@ -361,6 +422,15 @@ extension InnerTubeAPI {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw APIError.decodingError("Root JSON is not a dictionary")
         }
+        #if os(tvOS)
+        if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+            let playability = json["playabilityStatus"] as? [String: Any]
+            let status = playability?["status"] as? String ?? "missing"
+            let reason = playability?["reason"] as? String ?? ""
+            let hasHLS = (json["streamingData"] as? [String: Any])?["hlsManifestUrl"] != nil
+            print("[InnerTube] VisionOS player status=\(status) hls=\(hasHLS) reason=\(reason)")
+        }
+        #endif
         return json
     }
 

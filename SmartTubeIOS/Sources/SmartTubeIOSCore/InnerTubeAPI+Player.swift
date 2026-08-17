@@ -144,7 +144,7 @@ extension InnerTubeAPI {
     public func fetchPlayerInfoVisionOS(videoId: String) async throws -> PlayerInfo {
         await seedVisionOSSession(videoId: videoId)
         var clientFields = (visionOSClientContext["client"] as? [String: Any]) ?? [:]
-        if let vd = visitorData { clientFields["visitorData"] = vd }
+        if let vd = anonymousVisitorData { clientFields["visitorData"] = vd }
         var body = makeBody(client: ["client": clientFields])
         body["videoId"] = videoId
         body["racyCheckOk"] = true
@@ -557,6 +557,17 @@ extension InnerTubeAPI {
         let viewCount = (videoDetails?["viewCount"] as? String).flatMap { Int($0) }
         let thumbURL = ((videoDetails?["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?
             .last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let playerMicroformat = (json["microformat"] as? [String: Any])?["playerMicroformatRenderer"] as? [String: Any]
+        let publishedAt: Date? = {
+            guard let raw = playerMicroformat?["publishDate"] as? String
+                ?? playerMicroformat?["uploadDate"] as? String else { return nil }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            return formatter.date(from: raw)
+        }()
 
         // Stream formats
         let streamingData = json["streamingData"] as? [String: Any]
@@ -711,6 +722,7 @@ extension InnerTubeAPI {
             thumbnailURL: thumbURL,
             duration: duration,
             viewCount: viewCount,
+            publishedAt: publishedAt,
             isLive: isLive
         )
 

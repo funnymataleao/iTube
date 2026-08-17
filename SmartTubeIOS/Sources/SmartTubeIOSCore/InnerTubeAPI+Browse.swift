@@ -46,6 +46,7 @@ extension InnerTubeAPI {
     /// Falls back to a single flat VideoGroup if no shelves are found.
     public func fetchHomeRows(continuationToken: String? = nil) async throws -> [VideoGroup] {
         let isAuth = authToken != nil
+        print("📊 fetchHomeRows: authToken=\(authToken != nil ? "present" : "nil") client=\(isAuth ? "TVHTML5" : "WEB")")
         var body = makeBody(client: isAuth ? tvClientContext : webClientContext,
                             continuationToken: continuationToken,
                             includeVisitorData: true)

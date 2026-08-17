@@ -19,6 +19,33 @@ extension InnerTubeAPI {
         parseVideoGroupRows(from: json)
     }
 
+    /// The response does not guarantee the thumbnail array's ordering. Choose the
+    /// largest advertised image instead of assuming the final item is the sharpest.
+    private func largestThumbnailURL(from sources: [[String: Any]]?) -> URL? {
+        guard let sources else { return nil }
+
+        var selected: (url: URL, pixelCount: Int, index: Int)?
+        for (index, source) in sources.enumerated() {
+            guard let rawURL = source["url"] as? String,
+                  let url = URL(string: rawURL) else { continue }
+
+            let width = (source["width"] as? Int) ?? (source["width"] as? NSNumber)?.intValue ?? 0
+            let height = (source["height"] as? Int) ?? (source["height"] as? NSNumber)?.intValue ?? 0
+            let candidate = (url: url, pixelCount: width * height, index: index)
+
+            if let current = selected {
+                if candidate.pixelCount > current.pixelCount
+                    || (candidate.pixelCount == current.pixelCount && candidate.index > current.index) {
+                    selected = candidate
+                }
+            } else {
+                selected = candidate
+            }
+        }
+
+        return selected?.url
+    }
+
     // MARK: - Multi-shelf home row parser
 
     /// Walks the JSON looking for `richShelfRenderer` sections (YouTube home feed).
@@ -27,6 +54,11 @@ extension InnerTubeAPI {
     func parseVideoGroupRows(from json: [String: Any]) -> [VideoGroup] {
         var rows: [VideoGroup] = []
         var feedContinuationToken: String? = nil
+        
+        // 🔍 DIAGNOSTIC: Track all renderer types encountered
+        var encountereredRendererTypes: [String: Int] = [:]
+        var processedRendererTypes: [String: Int] = [:]
+        var skippedRendererTypes: [String: Int] = [:]
 
         // Renderer keys that are known ad/promoted slots — skip silently.
         let adRendererKeys: Set<String> = [
@@ -175,6 +207,11 @@ extension InnerTubeAPI {
                 return
             }
             if let dict = obj as? [String: Any] {
+                // 🔍 DIAGNOSTIC: Track all renderer keys at top level
+                for key in dict.keys where key.hasSuffix("Renderer") {
+                    encountereredRendererTypes[key, default: 0] += 1
+                }
+                
                 // This continuation belongs to the vertical Home feed and returns
                 // more Google-ranked shelves. Shelf-level horizontal continuations
                 // must not replace it, otherwise the Home feed turns into one long row.
@@ -193,6 +230,7 @@ extension InnerTubeAPI {
                     return
                 }
                 if let shelf = dict["richShelfRenderer"] as? [String: Any] {
+                    processedRendererTypes["richShelfRenderer", default: 0] += 1
                     let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["contents"] as Any)
                     if !videos.isEmpty {
@@ -206,6 +244,7 @@ extension InnerTubeAPI {
                     return
                 }
                 if let shelf = dict["reelShelfRenderer"] as? [String: Any] {
+                    processedRendererTypes["reelShelfRenderer", default: 0] += 1
                     let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["items"] as Any)
                     if !videos.isEmpty {
@@ -219,6 +258,7 @@ extension InnerTubeAPI {
                     return
                 }
                 if let shelf = dict["shelfRenderer"] as? [String: Any] {
+                    processedRendererTypes["shelfRenderer", default: 0] += 1
                     let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["content"] as Any)
                     if !videos.isEmpty {
@@ -246,8 +286,14 @@ extension InnerTubeAPI {
                     let isAd = contentKeys.contains(where: { adRendererKeys.contains($0) })
                     if isAd {
                         tubeLog.debug("walk: skipping ad richSectionRenderer content keys=\(contentKeys, privacy: .public)")
+                        for key in contentKeys where key.hasSuffix("Renderer") {
+                            skippedRendererTypes[key, default: 0] += 1
+                        }
                     } else if !contentKeys.contains("richShelfRenderer") {
                         tubeLog.notice("walk: unrecognised richSectionRenderer — add key to adRendererKeys if it is an ad\nkeys=\(contentKeys, privacy: .public)\nJSON=\(dumpJSON(content), privacy: .public)")
+                        for key in contentKeys where key.hasSuffix("Renderer") {
+                            skippedRendererTypes[key, default: 0] += 1
+                        }
                         for value in dict.values { walk(value, depth: depth + 1) }
                     } else {
                         for value in dict.values { walk(value, depth: depth + 1) }
@@ -261,6 +307,24 @@ extension InnerTubeAPI {
         }
 
         walk(json)
+        
+        // 🔍 DIAGNOSTIC: Log renderer type statistics (stdout for devicectl)
+        print("📊 RENDERER DIAGNOSTIC:")
+        print("📊 Encountered renderer types: \(encountereredRendererTypes)")
+        print("📊 Processed renderer types: \(processedRendererTypes)")
+        print("📊 Skipped renderer types: \(skippedRendererTypes)")
+        
+        let unprocessedTypes = encountereredRendererTypes.filter { key, _ in
+            !processedRendererTypes.keys.contains(key) && !skippedRendererTypes.keys.contains(key)
+        }
+        if !unprocessedTypes.isEmpty {
+            print("📊 ⚠️ UNPROCESSED renderer types (might contain shelves): \(unprocessedTypes)")
+        }
+        
+        print("📊 Feed continuation token: \(feedContinuationToken != nil ? "PRESENT" : "NONE")")
+        if let token = feedContinuationToken {
+            print("📊 Feed continuation token prefix: \(String(token.prefix(50)))")
+        }
 
         if rows.isEmpty {
             // No shelves found — fall back to flat parse
@@ -598,7 +662,7 @@ extension InnerTubeAPI {
         // thumbnail: header.tileHeaderRenderer.thumbnail.thumbnails — Android: TileItem.getThumbnails()
         let tileHeader = (tile["header"] as? [String: Any])?["tileHeaderRenderer"] as? [String: Any]
         let thumbnails = (tileHeader?["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         // duration: header.tileHeaderRenderer.thumbnailOverlays[].thumbnailOverlayTimeStatusRenderer.text
         // Android: TileItem.getBadgeText()
@@ -831,7 +895,7 @@ extension InnerTubeAPI {
         // thumbnail: contentImage.thumbnailViewModel.image.thumbnails
         let thumbVM = (lockup["contentImage"] as? [String: Any])?["thumbnailViewModel"] as? [String: Any]
         let thumbnails = (thumbVM?["image"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         // isShort: only one signal currently (reelWatchEndpoint) — unlike parseVideoRenderer's
         // four signals. GitHub #41 ("Hide Shorts" still leaking through in Home/Subscriptions,
@@ -901,7 +965,7 @@ extension InnerTubeAPI {
         guard let videoId = r["videoId"] as? String else { return nil }
         let title = (r["headline"] as? [String: Any]).flatMap { extractText($0) } ?? ""
         let thumbnails = (r["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         // channelTitle: ownerText or shortBylineText — for collab videos YouTube
         // renders multiple runs ("Inequality Media and Robert Reich"). Take only the
@@ -965,7 +1029,7 @@ extension InnerTubeAPI {
         }()
 
         let thumbnails = (r["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         // duration: lengthText (videoRenderer) or thumbnailOverlays[N].thumbnailOverlayTimeStatusRenderer.text (gridVideoRenderer)
         let lengthText: String? = (r["lengthText"] as? [String: Any]).flatMap { extractText($0) }
@@ -1112,7 +1176,7 @@ extension InnerTubeAPI {
         }()
 
         let thumbnails = (r["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         let lengthText = (r["lengthText"] as? [String: Any]).flatMap { extractText($0) }
         let duration = lengthText.flatMap { parseDuration($0) }
@@ -1188,8 +1252,8 @@ extension InnerTubeAPI {
     //   videoId:   onTap.innertubeCommand.reelWatchEndpoint.videoId
     //   title:     overlayMetadata.primaryText.content
     //   viewCount: overlayMetadata.secondaryText.content  (e.g. "3.3K views")
-    //   thumbnail: onTap.innertubeCommand.reelWatchEndpoint.thumbnail.thumbnails[-1].url
-    //              or thumbnailViewModel.image.sources[-1].url as fallback
+    //   thumbnail: largest URL in reelWatchEndpoint.thumbnail.thumbnails
+    //              or thumbnailViewModel.image.sources as fallback
     private func parseShortsLockupViewModel(_ r: [String: Any]) -> Video? {
         // videoId — from reelWatchEndpoint inside onTap.innertubeCommand
         guard let onTap = r["onTap"] as? [String: Any],
@@ -1217,19 +1281,19 @@ extension InnerTubeAPI {
             return extractNumber(content)
         }()
 
-        // thumbnail — reelWatchEndpoint.thumbnail.thumbnails[-1] preferred; thumbnailViewModel fallback
+        // thumbnail — highest-resolution reelWatchEndpoint asset preferred; thumbnailViewModel fallback
         let thumbURL: URL? = {
             if let thumbDict = reelEp["thumbnail"] as? [String: Any],
                let thumbs = thumbDict["thumbnails"] as? [[String: Any]],
-               let urlStr = thumbs.last?["url"] as? String {
-                return URL(string: urlStr)
+               let url = largestThumbnailURL(from: thumbs) {
+                return url
             }
-            // Fallback: thumbnailViewModel.image.sources[-1].url
+            // Fallback: highest-resolution thumbnailViewModel image source.
             if let tvm = r["thumbnailViewModel"] as? [String: Any],
                let image = tvm["image"] as? [String: Any],
                let sources = image["sources"] as? [[String: Any]],
-               let urlStr = sources.last?["url"] as? String {
-                return URL(string: urlStr)
+               let url = largestThumbnailURL(from: sources) {
+                return url
             }
             return nil
         }()

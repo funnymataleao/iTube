@@ -155,14 +155,16 @@ public final class HomeViewModel {
 
     private func observeFeedHideNotifications() {
         hideObserverTasks.append(Task { [weak self] in
+            guard let self else { return }
             for await note in NotificationCenter.default.notifications(named: .hideVideoFromFeed) {
-                guard let self, let videoId = note.userInfo?["videoId"] as? String else { continue }
+                guard let videoId = note.userInfo?["videoId"] as? String else { continue }
                 self.removeVideo(id: videoId)
             }
         })
         hideObserverTasks.append(Task { [weak self] in
+            guard let self else { return }
             for await note in NotificationCenter.default.notifications(named: .hideChannelFromFeed) {
-                guard let self, let channelId = note.userInfo?["channelId"] as? String else { continue }
+                guard let channelId = note.userInfo?["channelId"] as? String else { continue }
                 self.removeChannel(id: channelId)
             }
         })

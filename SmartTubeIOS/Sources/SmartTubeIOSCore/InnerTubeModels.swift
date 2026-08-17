@@ -99,6 +99,24 @@ public struct PlayerInfo: Sendable {
     /// fetch is performed in PlaybackViewModel when this is empty.
     public let endCards: [EndCard]
 
+    public init(
+        video: Video,
+        formats: [VideoFormat],
+        hlsURL: URL?,
+        dashURL: URL?,
+        captionTracks: [CaptionTrack],
+        trackingURLs: PlaybackTrackingURLs?,
+        endCards: [EndCard]
+    ) {
+        self.video = video
+        self.formats = formats
+        self.hlsURL = hlsURL
+        self.dashURL = dashURL
+        self.captionTracks = captionTracks
+        self.trackingURLs = trackingURLs
+        self.endCards = endCards
+    }
+
     /// The best stream URL to hand to AVPlayer.
     /// Prefers HLS (works natively in AVPlayer on iOS, handles adaptive quality).
     /// Falls back to combined muxed mp4 for non-HLS responses.

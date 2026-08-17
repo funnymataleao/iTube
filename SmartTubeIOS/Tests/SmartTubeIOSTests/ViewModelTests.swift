@@ -23,6 +23,7 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
 
     var homeResult: VideoGroup = VideoGroup(title: "Home", videos: [])
     var homeRowsResult: [VideoGroup] = []
+    var homeRowsHandler: ((String?) -> [VideoGroup])? = nil
     var homeShelfResult: VideoGroup = VideoGroup(videos: [])
     var subscriptionsResult: VideoGroup = VideoGroup(title: "Subs", videos: [])
     var historyResult: VideoGroup = VideoGroup(title: "History", videos: [])
@@ -68,6 +69,7 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
     func fetchHomeRows(continuationToken: String?) async throws -> [VideoGroup] {
         calls.append(Call(method: "fetchHomeRows", args: [continuationToken ?? "nil"]))
         if let e = errorToThrow { throw e }
+        if let handler = homeRowsHandler { return handler(continuationToken) }
         return homeRowsResult
     }
 
@@ -562,6 +564,54 @@ struct BrowseViewModelTests {
             "first_AAAAA", "second_BBBBB", "third_CCCCC"
         ])
         #expect(vm.videoGroups.first?.rowContinuationToken == nil)
+    }
+
+    @Test("Home vertical pagination loads more shelves without horizontal scrolling")
+    func homeLoadsMoreVerticalShelves() async {
+        let mock = MockInnerTubeAPI()
+        mock.homeRowsHandler = { token in
+            switch token {
+            case nil:
+                return [
+                    VideoGroup(title: "Recommended", videos: [makeVideo("rec_AAAAA")], layout: .row),
+                    VideoGroup(title: "Top news", videos: [makeVideo("news_BBBBB")], layout: .row),
+                    VideoGroup(
+                        title: "Recently uploaded",
+                        videos: [makeVideo("recent_CCCCC")],
+                        nextPageToken: "home-page-2",
+                        layout: .row
+                    )
+                ]
+            case "home-page-2":
+                return [
+                    VideoGroup(title: "Gaming", videos: [makeVideo("game_DDDDD")], layout: .row),
+                    VideoGroup(
+                        title: "Science & Space",
+                        videos: [makeVideo("space_EEEEE")],
+                        nextPageToken: "home-page-3",
+                        layout: .row
+                    )
+                ]
+            default:
+                return []
+            }
+        }
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        vm.loadContent(for: section, refresh: true, source: "test")
+        await waitForTasks(until: { vm.videoGroups.count == 3 })
+
+        vm.loadMoreHomeRowsIfNeeded()
+        await waitForTasks(until: { vm.videoGroups.count == 5 })
+
+        #expect(mock.calls.contains {
+            $0.method == "fetchHomeRows" && $0.args == ["home-page-2"]
+        })
+        #expect(vm.videoGroups.map(\.title) == [
+            "Recommended", "Top news", "Recently uploaded", "Gaming", "Science & Space"
+        ])
+        #expect(vm.videoGroups.last?.nextPageToken == "home-page-3")
     }
 
     @Test("loadContent for .subscriptions calls fetchSubscriptions and populates videoGroups")

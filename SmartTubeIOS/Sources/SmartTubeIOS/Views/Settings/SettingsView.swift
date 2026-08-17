@@ -12,6 +12,7 @@ public struct SettingsView: View {
     @Environment(SettingsStore.self) private var store
     @State private var showSignIn = false
     @State private var reportSent = false
+    @State private var showResetConfirmation = false
     #if os(tvOS)
     @State private var showGithubQR = false
     #endif
@@ -24,6 +25,8 @@ public struct SettingsView: View {
             #if os(tvOS)
             personalTVPlaybackSection
             personalTVContentSection
+            personalTVInterfaceSection
+            personalTVPrivacySection
             #else
             playerSection
             generalSection
@@ -49,6 +52,17 @@ public struct SettingsView: View {
         .sheet(isPresented: $showGithubQR) {
             GitHubQRView()
         }
+        .confirmationDialog(
+            "Reset all settings?",
+            isPresented: $showResetConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Settings", role: .destructive) {
+                store.reset()
+            }
+        } message: {
+            Text("This restores playback, content, and interface preferences. Your Google account stays signed in.")
+        }
         #endif
     }
 
@@ -58,49 +72,148 @@ public struct SettingsView: View {
     private var personalTVPlaybackSection: some View {
         @Bindable var store = store
         return Section("Playback") {
-            Picker("Quality", selection: $store.settings.preferredQuality) {
+            Picker("Video Quality", selection: $store.settings.preferredQuality) {
                 ForEach(AppSettings.VideoQuality.allCases, id: \.self) { quality in
                     Text(quality.rawValue.capitalized).tag(quality)
                 }
             }
             .accessibilityIdentifier("settings.preferredQualityPicker")
 
-            Picker("Audio Language", selection: $store.settings.preferredAudioLanguage) {
-                Text("System Default").tag(nil as String?)
-                Text("Original Track").tag("original" as String?)
-                Divider()
-                Text("English").tag("en" as String?)
-                Text("Portuguese").tag("pt" as String?)
-                Text("Russian").tag("ru" as String?)
-                Text("Spanish").tag("es" as String?)
-                Text("French").tag("fr" as String?)
-                Text("German").tag("de" as String?)
+            NavigationLink {
+                PreferredLanguageSettingsView(
+                    title: "Audio Language",
+                    options: PreferredLanguageOption.audio,
+                    selection: $store.settings.preferredAudioLanguage
+                )
+            } label: {
+                SettingValueLabel(
+                    title: "Audio Language",
+                    value: PreferredLanguageOption.displayName(
+                        for: store.settings.preferredAudioLanguage,
+                        options: PreferredLanguageOption.audio,
+                        noSelectionTitle: "Automatic"
+                    )
+                )
             }
             .accessibilityIdentifier("settings.preferredAudioLanguageRow")
 
-            Picker("Subtitle Language", selection: $store.settings.preferredCaptionLanguage) {
-                Text("System Default").tag(nil as String?)
-                Text("English").tag("en" as String?)
-                Text("Portuguese").tag("pt" as String?)
-                Text("Russian").tag("ru" as String?)
-                Text("Spanish").tag("es" as String?)
-                Text("French").tag("fr" as String?)
-                Text("German").tag("de" as String?)
+            NavigationLink {
+                PreferredLanguageSettingsView(
+                    title: "Subtitle Language",
+                    options: PreferredLanguageOption.captions,
+                    selection: $store.settings.preferredCaptionLanguage
+                )
+            } label: {
+                SettingValueLabel(
+                    title: "Subtitle Language",
+                    value: PreferredLanguageOption.displayName(
+                        for: store.settings.preferredCaptionLanguage,
+                        options: PreferredLanguageOption.captions,
+                        noSelectionTitle: "Off"
+                    )
+                )
             }
             .accessibilityIdentifier("settings.preferredSubtitleLanguageRow")
 
-            Toggle("Autoplay Next Video", isOn: $store.settings.autoplayEnabled)
+            Toggle("Play Next Video", isOn: $store.settings.autoplayEnabled)
                 .accessibilityIdentifier("settings.autoplayToggle")
+            Toggle("Loop Current Video", isOn: $store.settings.loopEnabled)
+                .accessibilityIdentifier("settings.loopToggle")
+            Toggle("Shuffle Recommendations", isOn: $store.settings.shuffleEnabled)
+                .accessibilityIdentifier("settings.shuffleToggle")
+
+            Picker("Skip Back", selection: $store.settings.seekBackSeconds) {
+                ForEach(AppSettings.availableSeekOptions, id: \.self) { seconds in
+                    Text("\(seconds) seconds").tag(seconds)
+                }
+            }
+            .accessibilityIdentifier("settings.seekBackRow")
+
+            Picker("Skip Forward", selection: $store.settings.seekForwardSeconds) {
+                ForEach(AppSettings.availableSeekOptions, id: \.self) { seconds in
+                    Text("\(seconds) seconds").tag(seconds)
+                }
+            }
+            .accessibilityIdentifier("settings.seekForwardRow")
+
+            Picker("Hide Controls After", selection: $store.settings.controlsHideTimeout) {
+                Text("2 seconds").tag(2)
+                Text("3 seconds").tag(3)
+                Text("4 seconds").tag(4)
+                Text("5 seconds").tag(5)
+                Text("8 seconds").tag(8)
+                Text("10 seconds").tag(10)
+            }
+            .accessibilityIdentifier("settings.controlsHideTimeoutPicker")
+
+            Picker("Video Fit", selection: $store.settings.videoGravityMode) {
+                Text("Fit").tag(AppSettings.VideoGravityMode.fit)
+                Text("Fill").tag(AppSettings.VideoGravityMode.fill)
+            }
+            .accessibilityIdentifier("settings.videoGravityPicker")
         }
     }
 
     private var personalTVContentSection: some View {
         @Bindable var store = store
-        return Section("Content") {
+        return Section {
             Toggle("SponsorBlock", isOn: $store.settings.sponsorBlockEnabled)
                 .accessibilityIdentifier("settings.sponsorBlockToggle")
             Toggle("DeArrow", isOn: $store.settings.deArrowEnabled)
                 .accessibilityIdentifier("settings.deArrowToggle")
+            Toggle("Hide Shorts", isOn: $store.settings.hideShorts)
+                .accessibilityIdentifier("settings.hideShortsToggle")
+            Toggle("Hide Live Shorts", isOn: $store.settings.hideLiveShorts)
+                .accessibilityIdentifier("settings.hideLiveShortsToggle")
+            Toggle("Hide Upcoming Premieres", isOn: $store.settings.hideVideoPremieres)
+                .accessibilityIdentifier("settings.hideVideoPremieresToggle")
+        } header: {
+            Text("Content")
+        } footer: {
+            Text("These choices change what is shown in Home, Search, and Library.")
+        }
+    }
+
+    private var personalTVInterfaceSection: some View {
+        @Bindable var store = store
+        return Section {
+            Picker("Appearance", selection: $store.settings.themeName) {
+                ForEach(AppSettings.ThemeName.allCases, id: \.self) { theme in
+                    Text(theme.rawValue).tag(theme)
+                }
+            }
+            .accessibilityIdentifier("settings.themeRow")
+
+            NavigationLink("Visible Tabs") {
+                SectionsSettingsView()
+                    .environment(store)
+            }
+            .accessibilityIdentifier("settings.visibleSectionsLink")
+
+            Toggle("Prefer H.264 Video", isOn: $store.settings.preferH264)
+                .accessibilityIdentifier("settings.preferH264Toggle")
+        } header: {
+            Text("Interface")
+        } footer: {
+            Text("Use H.264 only if videos have playback problems. It can limit the resolutions that are available.")
+        }
+    }
+
+    private var personalTVPrivacySection: some View {
+        @Bindable var store = store
+        return Section {
+            Picker("Watch History", selection: $store.settings.historyState) {
+                Text("On").tag(AppSettings.HistoryState.enabled)
+                Text("Off").tag(AppSettings.HistoryState.disabled)
+            }
+            .accessibilityIdentifier("settings.historyPicker")
+
+            Toggle("Sync Library with iCloud", isOn: $store.settings.iCloudSyncEnabled)
+                .accessibilityIdentifier("settings.iCloudSyncToggle")
+        } header: {
+            Text("Privacy & Data")
+        } footer: {
+            Text("iCloud sync shares your subscriptions, feeds, queue, and playback state with your other devices using the same Apple Account.")
         }
     }
     #endif
@@ -356,8 +469,7 @@ public struct SettingsView: View {
     private var aboutSection: some View {
         Section {
             #if os(tvOS)
-            LabeledContent("Fork", value: "Personal tvOS 1")
-            LabeledContent("Upstream", value: "00487cd · 2026-08-10")
+            LabeledContent("Version", value: appVersion)
             #else
             LabeledContent("Version", value: appVersion)
             #endif
@@ -367,6 +479,10 @@ public struct SettingsView: View {
             } label: {
                 Label("View on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
             }
+            Button("Reset Settings", role: .destructive) {
+                showResetConfirmation = true
+            }
+            .accessibilityIdentifier("settings.resetAllButton")
             #else
             Link(destination: URL(string: "https://github.com/milika/SmartTubeIOS")!) {
                 Label("View on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
@@ -403,6 +519,109 @@ public struct SettingsView: View {
     }
 }
 
+// MARK: - Preferred language selection (tvOS)
+
+#if os(tvOS)
+private struct PreferredLanguageOption: Identifiable, Hashable {
+    let code: String?
+    let title: String
+
+    var id: String { code ?? "automatic" }
+
+    static let audio: [Self] = [
+        Self(code: nil, title: "Automatic"),
+        Self(code: "original", title: "Original Track"),
+        Self(code: "en", title: "English"),
+        Self(code: "pt", title: "Portuguese"),
+        Self(code: "ru", title: "Russian"),
+        Self(code: "es", title: "Spanish"),
+        Self(code: "fr", title: "French"),
+        Self(code: "de", title: "German"),
+        Self(code: "ja", title: "Japanese"),
+        Self(code: "ko", title: "Korean"),
+        Self(code: "zh-Hans", title: "Chinese (Simplified)")
+    ]
+
+    static let captions: [Self] = [
+        Self(code: nil, title: "Off"),
+        Self(code: "en", title: "English"),
+        Self(code: "pt", title: "Portuguese"),
+        Self(code: "ru", title: "Russian"),
+        Self(code: "es", title: "Spanish"),
+        Self(code: "fr", title: "French"),
+        Self(code: "de", title: "German"),
+        Self(code: "ja", title: "Japanese"),
+        Self(code: "ko", title: "Korean"),
+        Self(code: "zh-Hans", title: "Chinese (Simplified)")
+    ]
+
+    static func displayName(
+        for code: String?,
+        options: [Self],
+        noSelectionTitle: String
+    ) -> String {
+        guard let code else { return noSelectionTitle }
+        if let exact = options.first(where: { $0.code == code }) {
+            return exact.title
+        }
+
+        let baseCode = code.components(separatedBy: "-").first ?? code
+        return options.first(where: { option in
+            guard let optionCode = option.code else { return false }
+            return optionCode == baseCode || optionCode.hasPrefix("\\(baseCode)-")
+        })?.title ?? code
+    }
+}
+
+private struct SettingValueLabel: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer(minLength: 24)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+}
+
+private struct PreferredLanguageSettingsView: View {
+    let title: String
+    let options: [PreferredLanguageOption]
+    @Binding var selection: String?
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(options) { option in
+                    Button {
+                        selection = option.code
+                    } label: {
+                        HStack {
+                            Text(option.title)
+                            Spacer()
+                            if selection == option.code {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("settings.languageOption.\\(option.id)")
+                }
+            } footer: {
+                Text("The selected language is used when it is available for a video.")
+            }
+        }
+        .navigationTitle(title)
+        .accessibilityIdentifier("settings.languageSelection.\\(title)")
+    }
+}
+#endif
+
 // MARK: - GitHubQRView (tvOS)
 
 #if os(tvOS)
@@ -421,7 +640,7 @@ private struct GitHubQRView: View {
                         .font(.system(size: 56))
                         .foregroundStyle(.white)
 
-                    Text("SmartTube on GitHub")
+                    Text("FakeTube on GitHub")
                         .font(.largeTitle).fontWeight(.bold)
 
                     Text("Scan the QR code with your phone to view the project on GitHub.")

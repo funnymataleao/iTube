@@ -1184,7 +1184,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = SmartTubeTVApp/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = PersonalTube;
+				INFOPLIST_KEY_CFBundleDisplayName = FakeTube;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -1223,7 +1223,7 @@
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = SmartTubeTVApp/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = PersonalTube;
+				INFOPLIST_KEY_CFBundleDisplayName = FakeTube;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

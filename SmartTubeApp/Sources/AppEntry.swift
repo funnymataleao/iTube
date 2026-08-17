@@ -171,7 +171,16 @@ struct AppEntry: App {
         // tvOS: no Share Extension, no Settings scene, no App Group pending video.
         // The device-code + QR sign-in flow works natively on Apple TV.
         WindowGroup {
-            RootView()
+            Group {
+                if let diagnosticVideoID = ProcessInfo.processInfo.environment["PLAYBACK_DIAGNOSTIC_VIDEO_ID"] {
+                    PlayerView(
+                        video: Video(id: diagnosticVideoID, title: diagnosticVideoID, channelTitle: ""),
+                        api: api
+                    )
+                } else {
+                    RootView()
+                }
+            }
                 .environment(authService)
                 .environment(browseViewModel)
                 .environment(settingsStore)
@@ -197,6 +206,16 @@ struct AppEntry: App {
                         if !enabled { await api.resetVisitorData() }
                         browseViewModel.loadContent(refresh: true, source: "perDeviceRecommendationsChanged")
                     }
+                }
+                .onChange(of: scenePhase, initial: true) { _, phase in
+                    if phase == .active {
+                        consumeDeepLinkFromLaunchArgs()
+                        authService.handleForeground()
+                        browseViewModel.refreshIfStale()
+                    }
+                }
+                .onAppear {
+                    consumeDeepLinkFromLaunchArgs()
                 }
         }
         #else
@@ -417,8 +436,11 @@ struct AppEntry: App {
     private func consumeDeepLinkFromLaunchArgs() {
         guard !deepLinkLaunchArgConsumed else { return }
         let args = ProcessInfo.processInfo.arguments
-        guard let arg = args.first(where: { $0.hasPrefix("--uitesting-deeplink-video=") }) else { return }
-        let videoID = String(arg.dropFirst("--uitesting-deeplink-video=".count))
+        let argumentVideoID = args
+            .first(where: { $0.hasPrefix("--uitesting-deeplink-video=") })
+            .map { String($0.dropFirst("--uitesting-deeplink-video=".count)) }
+        let environmentVideoID = ProcessInfo.processInfo.environment["PLAYBACK_DIAGNOSTIC_VIDEO_ID"]
+        guard let videoID = argumentVideoID ?? environmentVideoID else { return }
         guard !videoID.isEmpty, let deepLink = URL(string: "smarttube://video/\(videoID)") else { return }
         deepLinkLaunchArgConsumed = true
         #if os(iOS)
@@ -447,6 +469,13 @@ struct AppEntry: App {
             } else {
                 await UIApplication.shared.open(deepLink)
             }
+        }
+        #elseif os(tvOS)
+        // tvOS does not route custom URL schemes through UIApplication here.
+        // Keep the launch argument usable for deterministic physical-device QA.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            browseViewModel.deepLinkedVideo = Video(id: videoID, title: videoID, channelTitle: "")
         }
         #endif
     }
@@ -550,7 +579,9 @@ struct AppEntry: App {
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             let resultURL = docs?.appendingPathComponent("bg_probe_result.txt")
             // Write "started" immediately so we know the task launched.
-            try? "STARTED\nvideoId=\(videoID)\n".write(to: resultURL!, atomically: true, encoding: .utf8)
+            if let resultURL = resultURL {
+                try? "STARTED\nvideoId=\(videoID)\n".write(to: resultURL, atomically: true, encoding: .utf8)
+            }
             let client = BotGuardClient()
             do {
                 let token = try await client.token(for: videoID)

@@ -107,11 +107,15 @@ public struct Chapter: Identifiable, Hashable, Sendable, Codable {
     public let id: UUID
     public let title: String
     public let startTime: TimeInterval  // seconds from the start
+    /// Genuine chapter artwork supplied by YouTube. The player never invents or
+    /// repeats thumbnails when the endpoint does not provide one.
+    public let thumbnailURL: URL?
 
-    public init(title: String, startTime: TimeInterval) {
+    public init(title: String, startTime: TimeInterval, thumbnailURL: URL? = nil) {
         self.id = UUID()
         self.title = title
         self.startTime = startTime
+        self.thumbnailURL = thumbnailURL
     }
 }
 
@@ -132,6 +136,17 @@ public extension Video {
         }
     }
 
+    /// Maximum-resolution thumbnail (1280×720) when the uploader supplied one.
+    /// Not every video has this asset, so callers must retain a fallback chain.
+    var maxResolutionThumbnailURL: URL? {
+        URL(string: "https://i.ytimg.com/vi/\(id)/maxresdefault.jpg")
+    }
+
+    /// HD thumbnail (1280×720) used when `maxresdefault` is unavailable.
+    var highDefinitionThumbnailURL: URL? {
+        URL(string: "https://i.ytimg.com/vi/\(id)/hq720.jpg")
+    }
+
     /// High-quality thumbnail URL using YouTube's image CDN (480×360, always available).
     var highQualityThumbnailURL: URL? {
         URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg")
@@ -147,10 +162,17 @@ public extension Video {
         URL(string: "https://i.ytimg.com/vi/\(id)/mqdefault.jpg")
     }
 
-    /// Ordered static CDN fallbacks to try when `thumbnailURL` fails.
-    /// Priority: sddefault (640×480) → hqdefault (480×360) → mqdefault (320×180).
+    /// Ordered static CDN fallbacks to try when YouTube's response-provided URL fails.
+    /// Prefer 720p sources before accepting SD artwork; the latter looks visibly
+    /// pixelated in the large 4K tvOS cards.
     var thumbnailFallbackURLs: [URL] {
-        [sdThumbnailURL, highQualityThumbnailURL, mqThumbnailURL].compactMap { $0 }
+        [
+            maxResolutionThumbnailURL,
+            highDefinitionThumbnailURL,
+            sdThumbnailURL,
+            highQualityThumbnailURL,
+            mqThumbnailURL,
+        ].compactMap { $0 }
     }
 
     /// Portrait (9:16) thumbnail used for Shorts cards.

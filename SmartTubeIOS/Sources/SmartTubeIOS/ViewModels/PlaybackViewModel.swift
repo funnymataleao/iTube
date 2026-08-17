@@ -185,6 +185,14 @@ public final class PlaybackViewModel {
     public var likeStatus: LikeStatus { likeDislike.likeStatus }
     public func like() { likeDislike.like(videoId: currentVideo?.id) }
     public func dislike() { likeDislike.dislike(videoId: currentVideo?.id) }
+    /// Optimistic state for the authenticated YouTube "Watch Later" playlist.
+    /// It is exact after an action in this playback session and when playback
+    /// originated from the Watch Later playlist.
+    public internal(set) var isInWatchLater: Bool = false
+    public internal(set) var isUpdatingWatchLater: Bool = false
+    /// Subscription state for the current video's channel.
+    /// Backed by LocalSubscriptionStore for offline channel follow/unfollow.
+    public internal(set) var isSubscribed: Bool = false
     public internal(set) var statsForNerdsVisible: Bool = false
     public internal(set) var statsSnapshot: StatsForNerdsSnapshot = .empty
     /// End-screen cards to overlay during the final seconds of the video.
@@ -414,11 +422,11 @@ public final class PlaybackViewModel {
     // causes EXC_BREAKPOINT. Mirror the dict locally instead.
     @ObservationIgnored var nowPlayingInfoCache: [String: Any] = [:]
     // Cached thumbnail for MPMediaItemArtwork. Written from a background URLSession task;
-    // read from MediaPlayer's internal artwork-closure thread. nonisolated(unsafe) is
+    // read from MediaPlayer's internal artwork-closure thread. @ObservationIgnored is
     // intentional: UIImage is immutable after creation and the worst-case race is that
     // MediaPlayer gets nil on the first render (it will retry on the next state update).
     #if canImport(UIKit)
-    nonisolated(unsafe) var cachedArtwork: UIImage? = nil
+    @ObservationIgnored var cachedArtwork: UIImage? = nil
     @ObservationIgnored var cachedArtworkVideoID: String? = nil
     #endif
 
@@ -607,6 +615,56 @@ extension PlaybackViewModel: QualityEventHandler {
             activeTitle: active.title
         )
         toastMessage = "⚠️ Wrong video loaded — report sent"
+    }
+    
+    // MARK: - Subscription
+    
+    /// Toggles subscription status for the current video's channel.
+    /// Uses LocalSubscriptionStore for offline channel follow/unfollow.
+    public func toggleSubscription() {
+        guard let video = currentVideo,
+              let channelId = video.channelId,
+              !channelId.isEmpty else {
+            playerLog.notice("[subscription] toggleSubscription called but no valid channelId")
+            return
+        }
+        
+        Task {
+            let store = LocalSubscriptionStore.shared
+            let wasSubscribed = await store.isFollowing(channelId)
+            
+            if wasSubscribed {
+                await store.unfollow(channelId: channelId)
+                isSubscribed = false
+                toastMessage = "Unsubscribed from \(video.channelTitle)"
+                playerLog.notice("[subscription] Unsubscribed from channelId=\(channelId)")
+            } else {
+                let channel = LocalChannel(
+                    id: channelId,
+                    title: video.channelTitle,
+                    thumbnailURL: nil
+                )
+                await store.follow(channel)
+                isSubscribed = true
+                toastMessage = "Subscribed to \(video.channelTitle)"
+                playerLog.notice("[subscription] Subscribed to channelId=\(channelId)")
+            }
+        }
+    }
+    
+    /// Updates subscription state when a new video is loaded.
+    func updateSubscriptionState() {
+        guard let video = currentVideo,
+              let channelId = video.channelId,
+              !channelId.isEmpty else {
+            isSubscribed = false
+            return
+        }
+        
+        Task {
+            let subscribed = await LocalSubscriptionStore.shared.isFollowing(channelId)
+            isSubscribed = subscribed
+        }
     }
 }
 

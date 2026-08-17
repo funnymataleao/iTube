@@ -255,6 +255,10 @@ extension InnerTubeAPI {
             if let dict = obj as? [String: Any] {
                 if let renderer = dict["macroMarkersListItemRenderer"] as? [String: Any] {
                     let title = (renderer["title"] as? [String: Any]).flatMap { extractText($0) } ?? ""
+                    let thumbnailURL = ((renderer["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?
+                        .last
+                        .flatMap { $0["url"] as? String }
+                        .flatMap(URL.init(string:))
                     // startTimeSeconds arrives as Int, Double, or NSNumber depending on
                     // how JSONSerialization bridges the JSON number — handle all three.
                     let startTime: TimeInterval? = {
@@ -272,7 +276,7 @@ extension InnerTubeAPI {
                             .flatMap { parseDuration($0) }
                     }()
                     if let t = startTime {
-                        chapters.append(Chapter(title: title, startTime: t))
+                        chapters.append(Chapter(title: title, startTime: t, thumbnailURL: thumbnailURL))
                     }
                     return
                 }
@@ -282,7 +286,16 @@ extension InnerTubeAPI {
             }
         }
         walk(json)
-        return chapters.sorted { $0.startTime < $1.startTime }
+        let sorted = chapters.sorted { $0.startTime < $1.startTime }
+        var seenStartTimes = Set<Int64>()
+        let unique = sorted.filter { chapter in
+            let millisecondKey = Int64((chapter.startTime * 1_000).rounded())
+            return seenStartTimes.insert(millisecondKey).inserted
+        }
+        if unique.count != sorted.count {
+            tubeLog.notice("[parseChapters] removed \(sorted.count - unique.count, privacy: .public) duplicate chapter entries")
+        }
+        return unique
     }
 
     /// Finds the comments continuation token inside the `engagementPanels` of a
