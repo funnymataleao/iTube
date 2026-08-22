@@ -55,7 +55,7 @@ public actor URLVideoResolver {
     ///   the closure for UI updates.
     /// - Returns: The video ID string, or `nil` if none was found.
     public func resolve(url: URL, onProgress: (@Sendable (String) -> Void)? = nil) async -> String? {
-        resolverLog.notice("resolve: \(url.absoluteString, privacy: .public)")
+        resolverLog.notice("resolve: \(url.absoluteString, privacy: .private(mask: .hash))")
 
         // Step 1 — Direct parse (no network)
         if let id = YouTubeLinkHandler.videoID(from: url) {
@@ -93,7 +93,7 @@ public actor URLVideoResolver {
 
             var request = URLRequest(url: current)
             request.httpMethod = "HEAD"
-            request.setValue("SmartTube/1.0", forHTTPHeaderField: "User-Agent")
+            request.setValue("iTube/1.0", forHTTPHeaderField: "User-Agent")
 
             guard let (_, response) = try? await session.data(for: request) else {
                 resolverLog.notice("hop\(hop, privacy: .public) request failed")
@@ -113,11 +113,11 @@ public actor URLVideoResolver {
                   let next = URL(string: location, relativeTo: current)?.absoluteURL
             else {
                 // Not a redirect — we've reached the final URL; step 3 will scrape it.
-                resolverLog.notice("hop\(hop, privacy: .public) final URL: \(landed.absoluteString, privacy: .public)")
+                resolverLog.notice("hop\(hop, privacy: .public) final URL: \(landed.absoluteString, privacy: .private(mask: .hash))")
                 return nil
             }
 
-            resolverLog.notice("hop\(hop, privacy: .public) → \(next.absoluteString, privacy: .public)")
+            resolverLog.notice("hop\(hop, privacy: .public) → \(next.absoluteString, privacy: .private(mask: .hash))")
             onProgress?("  ↳ \(next.host ?? next.absoluteString)")
             if let id = YouTubeLinkHandler.videoID(from: next) { return id }
             current = next
@@ -132,7 +132,7 @@ public actor URLVideoResolver {
         guard isHTTP(url) else { return nil }
 
         var request = URLRequest(url: url)
-        request.setValue("SmartTube/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("iTube/1.0", forHTTPHeaderField: "User-Agent")
 
         guard let (data, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse

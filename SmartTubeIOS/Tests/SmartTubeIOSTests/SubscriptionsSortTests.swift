@@ -17,6 +17,14 @@ private func waitForSubsTasks() async {
 @MainActor
 struct SubscriptionsSortTests {
 
+    private func waitUntilLoaded(_ viewModel: BrowseViewModel) async {
+        for _ in 0..<100 {
+            if !viewModel.isLoading, viewModel.loadedAt != nil { return }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     /// Subscriptions videos must be sorted newest-first by publishedAt.
     /// Verifies the sort that fetchSubscriptions() applies after parseVideoGroup().
     @Test func subscriptionVideosSortedNewestFirst() {
@@ -47,6 +55,183 @@ struct SubscriptionsSortTests {
 
         #expect(videos[0].id == "dated")
         #expect(videos[1].id == "undated")
+    }
+
+    @Test("Explicit subscriptions Refresh atomically merges four pages newest-first")
+    func explicitRefreshBuildsBoundedFreshSnapshot() async {
+        let now = Date()
+        let oldest = Video(
+            id: "oldest",
+            title: "Five days old",
+            channelTitle: "Ch",
+            publishedAt: now.addingTimeInterval(-5 * 86_400)
+        )
+        let newest = Video(
+            id: "newest",
+            title: "Today",
+            channelTitle: "Ch",
+            publishedAt: now
+        )
+        let oneDay = Video(
+            id: "one-day",
+            title: "One day old",
+            channelTitle: "Ch",
+            publishedAt: now.addingTimeInterval(-86_400)
+        )
+        let threeDays = Video(
+            id: "three-days",
+            title: "Three days old",
+            channelTitle: "Ch",
+            publishedAt: now.addingTimeInterval(-3 * 86_400)
+        )
+        let undated = Video(id: "undated", title: "Undated", channelTitle: "Ch")
+
+        let mock = MockInnerTubeAPI()
+        mock.subscriptionsHandler = { token in
+            switch token {
+            case nil:
+                return VideoGroup(
+                    title: "Subscriptions",
+                    videos: [oldest, undated],
+                    nextPageToken: "p2"
+                )
+            case "p2":
+                return VideoGroup(
+                    title: "Subscriptions",
+                    videos: [newest, oldest],
+                    nextPageToken: "p3"
+                )
+            case "p3":
+                return VideoGroup(videos: [oneDay], nextPageToken: "p4")
+            case "p4":
+                return VideoGroup(videos: [threeDays], nextPageToken: "p5")
+            default:
+                return VideoGroup(videos: [])
+            }
+        }
+
+        let section = BrowseSection(
+            id: "subscriptions",
+            title: "Subscriptions",
+            type: .subscriptions
+        )
+        let viewModel = BrowseViewModel(api: mock, initialSection: section)
+        await viewModel.updateAuthToken("fake-token")
+        await waitUntilLoaded(viewModel)
+
+        #expect(
+            mock.calls.filter { $0.method == "fetchSubscriptions" }.map(\.args) == [
+                ["nil"], ["p2"], ["p3"], ["p4"]
+            ],
+            "Initial load should inspect the bounded freshness window"
+        )
+
+        mock.calls.removeAll()
+        viewModel.reload(section: section)
+        await waitUntilLoaded(viewModel)
+
+        #expect(
+            mock.calls.filter { $0.method == "fetchSubscriptions" }.map(\.args) == [
+                ["nil"], ["p2"], ["p3"], ["p4"]
+            ]
+        )
+        #expect(viewModel.videoGroups.first?.videos.map(\.id) == [
+            "newest", "one-day", "three-days", "oldest", "undated"
+        ])
+        #expect(viewModel.videoGroups.first?.nextPageToken == "p5")
+    }
+
+    @Test("Explicit Refresh drops a repeated continuation token")
+    func explicitRefreshStopsRepeatedContinuation() async {
+        let first = Video(id: "first", title: "First", channelTitle: "Ch", publishedAt: Date())
+        let second = Video(id: "second", title: "Second", channelTitle: "Ch", publishedAt: Date())
+        let mock = MockInnerTubeAPI()
+        mock.subscriptionsHandler = { token in
+            token == nil
+                ? VideoGroup(videos: [first], nextPageToken: "loop")
+                : VideoGroup(videos: [second], nextPageToken: "loop")
+        }
+
+        let section = BrowseSection(type: .subscriptions)
+        let viewModel = BrowseViewModel(api: mock, initialSection: section)
+        await viewModel.updateAuthToken("fake-token")
+        await waitUntilLoaded(viewModel)
+        mock.calls.removeAll()
+
+        viewModel.reload(section: section)
+        await waitUntilLoaded(viewModel)
+
+        #expect(
+            mock.calls.filter { $0.method == "fetchSubscriptions" }.map(\.args) == [
+                ["nil"], ["loop"]
+            ]
+        )
+        #expect(viewModel.videoGroups.first?.videos.map(\.id) == ["first", "second"])
+        #expect(viewModel.videoGroups.first?.nextPageToken == nil)
+    }
+
+    @Test("Exact timestamps keep fresh uploads above dated old cards")
+    func exactTimestampsPreventOldCardFromLeadingAllSubscriptions() async {
+        let cache = SubscriptionTopicMetadataCache(
+            suiteName: "SubscriptionsFreshnessTests.\(UUID().uuidString)"
+        )
+        await cache.clear()
+
+        let now = Date()
+        let old = Video(
+            id: "known-two-weeks-old",
+            title: "Old upload",
+            channelTitle: "Old Channel",
+            publishedAt: now.addingTimeInterval(-14 * 86_400)
+        )
+        let freshButUndated = Video(
+            id: "fresh-renderer-without-date",
+            title: "Fresh upload",
+            channelTitle: "Fresh Channel"
+        )
+
+        let mock = MockInnerTubeAPI()
+        mock.subscriptionsResult = VideoGroup(
+            title: "Subscriptions",
+            videos: [old, freshButUndated]
+        )
+        mock.videoTopicMetadataResult = [
+            old.id: VideoTopicMetadata(
+                videoID: old.id,
+                categoryID: "24",
+                tags: [],
+                publishedAt: now.addingTimeInterval(-14 * 86_400)
+            ),
+            freshButUndated.id: VideoTopicMetadata(
+                videoID: freshButUndated.id,
+                categoryID: "24",
+                tags: [],
+                publishedAt: now.addingTimeInterval(-12 * 60)
+            ),
+        ]
+
+        let section = BrowseSection(
+            id: "subscriptions",
+            title: "Subscriptions",
+            type: .subscriptions
+        )
+        let viewModel = BrowseViewModel(
+            api: mock,
+            initialSection: section,
+            subscriptionMetadataCache: cache
+        )
+        await viewModel.updateAuthToken("fake-token")
+        await waitUntilLoaded(viewModel)
+
+        #expect(viewModel.videoGroups.first?.videos.map(\.id) == [
+            freshButUndated.id,
+            old.id,
+        ])
+        #expect(
+            viewModel.videoGroups.first?.videos.first?.exactPublishedAt
+                == mock.videoTopicMetadataResult[freshButUndated.id]?.publishedAt
+        )
+        await cache.clear()
     }
 
     /// Subscribed channels must be sorted alphabetically (case-insensitive).
@@ -93,7 +278,14 @@ struct SubscriptionsSortTests {
         let section = BrowseSection(id: "subscriptions", title: "Subscriptions", type: .subscriptions)
         let vm = BrowseViewModel(api: mock, initialSection: section)
         await vm.updateAuthToken("fake-token")
-        vm.loadContent(for: section, refresh: true, source: "test")
+        await waitForSubsTasks()
+        mock.calls.removeAll()
+        vm.loadContent(
+            for: section,
+            refresh: true,
+            source: "test.single-page-pagination",
+            subscriptionPageLimit: 1
+        )
         await waitForSubsTasks()
 
         #expect(vm.videoGroups[0].videos.count == 2, "page 1 should load 2 videos")

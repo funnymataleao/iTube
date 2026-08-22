@@ -56,12 +56,15 @@ final class AudioTrackManager {
     }
 
     /// Switches to `track`, or resets to the HLS default when `nil`.
-    /// Persists the language code in `AppSettings`.
+    /// Persists the language code on platforms that expose a global preference.
+    /// tvOS keeps this selection in the current AVKit playback context.
     /// For the YT-EXT-AUDIO-CONTENT-ID HLS path (no audioSelectionGroup), fires
     /// onHLSLanguageChange so the caller can reload the AVPlayerItem with the right language.
     func selectAudioTrack(_ track: AudioTrack?) {
         selectedAudioTrack = track
+        #if !os(tvOS)
         delegate?.settings.preferredAudioLanguage = track?.languageCode
+        #endif
         if let group = audioSelectionGroup {
             guard let item = player.currentItem else { return }
             if let track, let option = audioOptionsByID[track.id] {

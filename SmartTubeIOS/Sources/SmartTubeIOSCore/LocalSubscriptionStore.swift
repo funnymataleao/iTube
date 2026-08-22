@@ -71,6 +71,12 @@ public actor LocalSubscriptionStore: UserDefaultsBackedStore {
         persist()
     }
 
+    /// Deletes every locally followed channel, including the synchronized copy.
+    public func clear() {
+        channels = [:]
+        persist()
+    }
+
     /// Updates the stored name and/or thumbnail for an already-followed channel.
     /// Called after an RSS refresh to keep metadata fresh without a separate API call.
     /// No-op if the channel is not currently followed.

@@ -80,6 +80,21 @@ struct SearchHistoryStoreTests {
         #expect(entries.isEmpty)
     }
 
+    @Test("Preview artwork is capped, deduplicated, and survives re-adding a query")
+    func previewArtworkPersists() async {
+        let store = makeStore()
+        await store.add("SwiftUI")
+        await store.updatePreview(
+            for: "swiftui",
+            videoIDs: ["video-1", "video-2", "video-1", "video-3", "video-4"]
+        )
+        await store.add("SWIFTUI")
+
+        let entries = await store.all
+        #expect(entries.count == 1)
+        #expect(entries[0].previewVideoIDs == ["video-1", "video-2", "video-3"])
+    }
+
     // MARK: - Remove
 
     @Test("Removing a query deletes only that entry")

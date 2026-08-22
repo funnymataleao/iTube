@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import SmartTubeIOS
 @testable import SmartTubeIOSCore
 
 // MARK: - WatchHistoryAuthTokenTests
@@ -67,5 +68,36 @@ struct WatchHistoryAuthTokenTests {
     func apiInitWithToken() async {
         let api = InnerTubeAPI(authToken: "init-token")
         #expect(await api.authToken == "init-token")
+    }
+}
+
+@MainActor
+@Suite("Playback SponsorBlock authorization")
+struct PlaybackSponsorBlockAuthorizationTests {
+
+    @Test("Guest AVPlayer playback never skips creator self-promotion")
+    func guestPlaybackDoesNotSkipSelfPromotion() {
+        let vm = PlaybackViewModel()
+        vm.sponsorSegments = [SponsorSegment(start: 5, end: 10, category: .selfPromo)]
+
+        let skipped = vm.checkSponsorSkip(at: 6)
+
+        #expect(skipped == false)
+        #expect(vm.currentToastSegment == nil)
+    }
+
+    @Test("Signing out immediately clears AVPlayer SponsorBlock state")
+    func signingOutClearsSponsorBlockState() {
+        let vm = PlaybackViewModel()
+        vm.hasAuthToken = true
+        vm.currentAuthToken = "test-token"
+        let segment = SponsorSegment(start: 5, end: 10, category: .selfPromo)
+        vm.sponsorSegments = [segment]
+        vm.currentToastSegment = segment
+
+        vm.updateAuthToken(nil)
+
+        #expect(vm.sponsorSegments.isEmpty)
+        #expect(vm.currentToastSegment == nil)
     }
 }

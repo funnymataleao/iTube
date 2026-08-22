@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to SmartTube are documented here.
+All notable changes to iTube are documented here. Older entries retain the historical upstream product name where applicable.
 
 ---
 

@@ -73,7 +73,7 @@ extension ShortsEmbedPlayerViewModel {
             // (ShortsEmbedPlayerViewModel.swift) for the full root-cause story.
             if embedFrameInfo == nil {
                 embedFrameInfo = frameInfo
-                shortsLog.notice("[\(self.logTag, privacy: .public)] [frame] captured embed iframe frameInfo — isMainFrame=\(frameInfo.isMainFrame, privacy: .public) url=\(frameInfo.request.url?.absoluteString ?? "nil", privacy: .public)")
+                shortsLog.notice("[\(self.logTag, privacy: .private(mask: .hash))] [frame] captured embed iframe frameInfo — isMainFrame=\(frameInfo.isMainFrame, privacy: .public)")
 
             }
             isReady = true

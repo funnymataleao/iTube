@@ -7,7 +7,7 @@ private let shareLog = Logger(subsystem: "com.void.smarttube.app.shareextension"
 
 // MARK: - ShareViewController
 //
-// Presents a compact sheet with an "Open in SmartTube" button. The button tap
+// Presents a compact sheet with an "Open in iTube" button. The button tap
 // is user-initiated, which is required for `extensionContext?.open(_:)` to
 // reliably launch the containing app from a Share Extension in modern iOS —
 // programmatic (non-user-initiated) calls are not honoured when the host is a
@@ -38,7 +38,7 @@ final class ShareViewController: UIViewController {
 
     private let openButton: UIButton = {
         var config = UIButton.Configuration.filled()
-        config.title = "Open in SmartTube"
+        config.title = "Open in iTube"
         config.cornerStyle = .large
         config.baseBackgroundColor = UIColor(red: 0.40, green: 0.20, blue: 0.80, alpha: 1)
         let b = UIButton(configuration: config)
@@ -113,7 +113,7 @@ final class ShareViewController: UIViewController {
 
     private let titleLabel: UILabel = {
         let l = UILabel()
-        l.text = "SmartTube"
+        l.text = "iTube"
         l.font = .systemFont(ofSize: 17, weight: .semibold)
         l.textColor = .label
         l.translatesAutoresizingMaskIntoConstraints = false
@@ -355,7 +355,7 @@ final class ShareViewController: UIViewController {
         }
 
         logEntry("❌ No UIApplication in chain (depth \(depth))")
-        logEntry("App Group written — open SmartTube manually")
+        logEntry("App Group written — open iTube manually")
         shareLog.error("no UIApplication found after \(depth) hops — App Group fallback")
         extensionContext?.completeRequest(returningItems: nil)
     }
@@ -526,4 +526,3 @@ final class ShareViewController: UIViewController {
         )
     }
 }
-

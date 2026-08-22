@@ -141,7 +141,7 @@ private struct DownloadPlaceholderWidget: Widget {
             EmptyView()
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("SmartTube Download")
+        .configurationDisplayName("iTube Download")
         .description("Shows download progress in the Dynamic Island.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }

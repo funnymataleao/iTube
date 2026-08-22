@@ -126,6 +126,20 @@ package enum InnerTubeClients {
         // and 5.x breaks the /browse home-feed endpoint (HTTP 400). No benefit to 5.x here.
         package static let version   = "7.20260707.07.00"
         package static let userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
+        /// User-Agent used by SmartTube's authenticated action transport.
+        /// YouTube validates subscription mutations against the TV OAuth profile,
+        /// so this value must match the client context sent in the request body.
+        package static let actionUserAgent = "Mozilla/5.0 (Linux armeabi-v7a; Android 7.1.2; Fire OS 6.0) Cobalt/22.lts.3.306369-gold (unlike Gecko) v8/8.8.278.8-jit gles Starboard/13, Amazon_ATV_mediatek8695_2019/NS6294 (Amazon, AFTMM, Wireless) com.amazon.firetv.youtube/22.3.r2.v66.0"
+    }
+
+    /// yt-dlp's current `tv_downgraded` identity. The regular 7.x TV client can
+    /// return SABR/DRM or rqh=1 URLs for authenticated sessions; the 5.x client is
+    /// retained upstream specifically as a playback fallback for account sessions.
+    package enum TVDowngraded {
+        package static let name      = "TVHTML5"
+        package static let nameID    = "7"
+        package static let version   = "5.20260707"
+        package static let userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
     }
 
     /// Maximum number of videos fetched per shelf/related-videos request.

@@ -144,7 +144,7 @@ extension InnerTubeAPI {
     public func fetchPlayerInfoVisionOS(videoId: String) async throws -> PlayerInfo {
         await seedVisionOSSession(videoId: videoId)
         var clientFields = (visionOSClientContext["client"] as? [String: Any]) ?? [:]
-        if let vd = visitorData { clientFields["visitorData"] = vd }
+        if let vd = anonymousVisitorData { clientFields["visitorData"] = vd }
         var body = makeBody(client: ["client": clientFields])
         body["videoId"] = videoId
         body["racyCheckOk"] = true
@@ -193,6 +193,9 @@ extension InnerTubeAPI {
     /// The Safari UA is the key differentiator — nameID=1 with Chrome UA does not return
     /// HLS manifest. HLS segments from manifest.googlevideo.com do not require pot= tokens.
     public func fetchPlayerInfoWebSafari(videoId: String) async throws -> PlayerInfo {
+        #if os(tvOS)
+        await seedVisionOSSession(videoId: videoId)
+        #endif
         let sts = await fetchSignatureTimestampIfNeeded()
         var cpbc: [String: Any] = ["html5Preference": "HTML5_PREF_WANTS"]
         if let sts { cpbc["signatureTimestamp"] = sts }
@@ -333,7 +336,7 @@ extension InnerTubeAPI {
         if let sabrStr = (firstData["streamingData"] as? [String: Any])?["serverAbrStreamingUrl"] as? String,
            let sabrURL = URL(string: sabrStr),
            let bearerToken = authToken {
-            tubeLog.notice("D-16 SABR URL (first 200): \(sabrStr.prefix(200), privacy: .public)")
+            tubeLog.notice("D-16 SABR URL resolved")
             let capturedToken = bearerToken
             Task.detached {
                 var req = URLRequest(url: sabrURL)
@@ -343,8 +346,7 @@ extension InnerTubeAPI {
                 if let (data, resp) = try? await URLSession(configuration: .ephemeral).data(for: req),
                    let http = resp as? HTTPURLResponse {
                     let ct = http.value(forHTTPHeaderField: "Content-Type") ?? "?"
-                    let preview = String(data: data.prefix(300), encoding: .utf8) ?? "(binary \(data.count) bytes)"
-                    tubeLog.notice("D-16 SABR GET Bearer: HTTP \(http.statusCode, privacy: .public) ct=\(ct, privacy: .public) body_preview=\(preview.prefix(200), privacy: .public)")
+                    tubeLog.notice("D-16 SABR GET Bearer: HTTP \(http.statusCode, privacy: .public) ct=\(ct, privacy: .public) bytes=\(data.count, privacy: .public)")
                 } else {
                     tubeLog.notice("D-16 SABR GET Bearer: fail/timeout")
                 }
@@ -367,6 +369,34 @@ extension InnerTubeAPI {
         }
 
         return try parsePlayerInfo(from: firstData, videoId: videoId)
+    }
+
+    /// Authenticated player request using yt-dlp's `tv_downgraded` identity.
+    /// This is deliberately player-only: the 5.x context can fail browse/actions,
+    /// while still yielding a non-SABR fallback stream for account playback.
+    public func fetchPlayerInfoTVDowngradedAuthenticated(videoId: String) async throws -> PlayerInfo {
+        guard authToken != nil else { throw APIError.notAuthenticated }
+
+        var clientFields = (tvDowngradedClientContext["client"] as? [String: Any]) ?? [:]
+        if let vd = visitorData { clientFields["visitorData"] = vd }
+
+        let sts = await fetchSignatureTimestampIfNeeded()
+        var playbackContext: [String: Any] = ["html5Preference": "HTML5_PREF_WANTS"]
+        if let sts { playbackContext["signatureTimestamp"] = sts }
+
+        var body = makeBody(client: ["client": clientFields])
+        body["videoId"] = videoId
+        body["racyCheckOk"] = true
+        body["contentCheckOk"] = true
+        body["playbackContext"] = ["contentPlaybackContext": playbackContext]
+
+        let data = try await postTV(
+            endpoint: "player",
+            body: body,
+            clientVersion: InnerTubeClients.TVDowngraded.version,
+            userAgent: InnerTubeClients.TVDowngraded.userAgent
+        )
+        return try parsePlayerInfo(from: data, videoId: videoId)
     }
 
     /// Fetches end-screen cards for a video using the Web client.
@@ -557,6 +587,17 @@ extension InnerTubeAPI {
         let viewCount = (videoDetails?["viewCount"] as? String).flatMap { Int($0) }
         let thumbURL = ((videoDetails?["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?
             .last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let playerMicroformat = (json["microformat"] as? [String: Any])?["playerMicroformatRenderer"] as? [String: Any]
+        let publishedAt: Date? = {
+            guard let raw = playerMicroformat?["publishDate"] as? String
+                ?? playerMicroformat?["uploadDate"] as? String else { return nil }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            return formatter.date(from: raw)
+        }()
 
         // Stream formats
         let streamingData = json["streamingData"] as? [String: Any]
@@ -646,6 +687,8 @@ extension InnerTubeAPI {
 
         let hlsURL = (streamingData?["hlsManifestUrl"] as? String).flatMap { URL(string: $0) }
         let dashURL = (streamingData?["dashManifestUrl"] as? String).flatMap { URL(string: $0) }
+        let serverAbrURL = (streamingData?["serverAbrStreamingUrl"] as? String)
+            .flatMap { URL(string: $0) }
 
         // Diagnostics: log adaptive format heights and first URL param snapshot.
         let adaptiveFormatsRaw = streamingData?["adaptiveFormats"] as? [[String: Any]] ?? []
@@ -656,12 +699,21 @@ extension InnerTubeAPI {
         let streamingKeys = streamingData.map { Array($0.keys.sorted().prefix(12)) } ?? []
         tubeLog.notice("parsePlayerInfo id=\(videoId, privacy: .public) hls=\(hlsURL != nil, privacy: .public) dash=\(dashURL != nil, privacy: .public) totalFormats=\(formats.count, privacy: .public) adaptiveHeights=\(adaptiveHeights.prefix(8), privacy: .public) firstAdaptiveC=\(firstAdaptiveC, privacy: .public) streamingKeys=\(streamingKeys, privacy: .public)")
 
-        // Captions — parse from captions.playerCaptionsTracklistRenderer.captionTracks
+        // Captions — parse source tracks and YouTube's supported auto-translation
+        // languages from captions.playerCaptionsTracklistRenderer.
         let captionTracks: [CaptionTrack] = {
-            guard let trackList = (json["captions"] as? [String: Any])
-                .flatMap({ $0["playerCaptionsTracklistRenderer"] as? [String: Any] })
-                .flatMap({ $0["captionTracks"] as? [[String: Any]] })
+            guard let renderer = (json["captions"] as? [String: Any])
+                .flatMap({ $0["playerCaptionsTracklistRenderer"] as? [String: Any] }),
+                  let trackList = renderer["captionTracks"] as? [[String: Any]]
             else { return [] }
+            let translationLanguages: [CaptionTranslationLanguage] =
+                (renderer["translationLanguages"] as? [[String: Any]] ?? []).compactMap { language in
+                    guard let code = language["languageCode"] as? String, !code.isEmpty else { return nil }
+                    let name = (language["languageName"] as? [String: Any]).flatMap { extractText($0) }
+                        ?? Locale.current.localizedString(forLanguageCode: code)
+                        ?? code
+                    return CaptionTranslationLanguage(languageCode: code, name: name)
+                }
             return trackList.compactMap { track -> CaptionTrack? in
                 guard let baseUrlStr = track["baseUrl"] as? String,
                       let rawURL = URL(string: baseUrlStr) else { return nil }
@@ -680,7 +732,14 @@ extension InnerTubeAPI {
                 let kind = track["kind"] as? String ?? ""
                 let isAuto = vssId.hasPrefix("a.") || kind == "asr"
                 let trackId = vssId.isEmpty ? languageCode : vssId
-                return CaptionTrack(id: trackId, baseURL: baseURL, name: name, languageCode: languageCode, isAutoGenerated: isAuto)
+                return CaptionTrack(
+                    id: trackId,
+                    baseURL: baseURL,
+                    name: name,
+                    languageCode: languageCode,
+                    isAutoGenerated: isAuto,
+                    translationLanguages: translationLanguages
+                )
             }
         }()
         tubeLog.notice("parsePlayerInfo: captionTracks=\(captionTracks.count, privacy: .public)")
@@ -711,6 +770,7 @@ extension InnerTubeAPI {
             thumbnailURL: thumbURL,
             duration: duration,
             viewCount: viewCount,
+            publishedAt: publishedAt,
             isLive: isLive
         )
 
@@ -728,7 +788,16 @@ extension InnerTubeAPI {
         }
         let endCards = parseEndCards(from: json)
         tubeLog.notice("parsePlayerInfo: endCards=\(endCards.count, privacy: .public)")
-        return PlayerInfo(video: video, formats: formats, hlsURL: hlsURL, dashURL: dashURL, captionTracks: captionTracks, trackingURLs: trackingURLs, endCards: endCards)
+        return PlayerInfo(
+            video: video,
+            formats: formats,
+            hlsURL: hlsURL,
+            dashURL: dashURL,
+            serverAbrURL: serverAbrURL,
+            captionTracks: captionTracks,
+            trackingURLs: trackingURLs,
+            endCards: endCards
+        )
     }
 
     // MARK: – End cards parser
@@ -813,7 +882,7 @@ extension InnerTubeAPI {
         }
         comps?.queryItems = items
         guard let url = comps?.url else {
-            tubeLog.error("pingTrackingURL: failed to build URL from \(baseURL, privacy: .public)")
+            tubeLog.error("pingTrackingURL: failed to build tracking URL")
             return
         }
         var request = URLRequest(url: url)
@@ -826,22 +895,14 @@ extension InnerTubeAPI {
         }
         // BUG-006 fix: log errors and retry once for transient failures instead of silently discarding.
         //
-        // The response body is also logged (truncated to 200 chars). The stats server returns
-        // 200 for both credited and silently-dropped pings — without the body, the caller
-        // cannot tell whether the view was actually attributed. This is the only signal
-        // available to diagnose the #51/#78 attribution issue (ping returns 200 but the
-        // view does not appear in the user's history). When c= and cver= in the URL
-        // don't match what the server expects for the auth context, the server's body
-        // is typically an "ok: false" / error code, but the HTTP status is still 200.
+        // Log only status and byte count. Tracking URLs and response payloads can
+        // contain account/session identifiers and must never enter release logs.
         do {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                tubeLog.warning("pingTrackingURL: HTTP \(http.statusCode) for \(url.absoluteString.prefix(120), privacy: .public)")
+                tubeLog.warning("pingTrackingURL: HTTP \(http.statusCode)")
             } else {
-                let bodyPreview = String(data: data.prefix(200), encoding: .utf8)?
-                    .replacingOccurrences(of: "\n", with: " ")
-                    ?? "(non-utf8 \(data.count) bytes)"
-                tubeLog.notice("pingTrackingURL: ok — body=\(bodyPreview, privacy: .public) for \(url.absoluteString.prefix(120), privacy: .public)")
+                tubeLog.notice("pingTrackingURL: ok — responseBytes=\(data.count, privacy: .public)")
             }
         } catch is CancellationError {
             // Task was cancelled (user navigated away) — expected, do not retry.
@@ -850,12 +911,9 @@ extension InnerTubeAPI {
             do {
                 let (data, response) = try await session.data(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    tubeLog.error("pingTrackingURL: retry HTTP \(http.statusCode) for \(url.absoluteString.prefix(120), privacy: .public)")
+                    tubeLog.error("pingTrackingURL: retry HTTP \(http.statusCode)")
                 } else {
-                    let bodyPreview = String(data: data.prefix(200), encoding: .utf8)?
-                        .replacingOccurrences(of: "\n", with: " ")
-                        ?? "(non-utf8 \(data.count) bytes)"
-                    tubeLog.notice("pingTrackingURL: retry ok — body=\(bodyPreview, privacy: .public) for \(url.absoluteString.prefix(120), privacy: .public)")
+                    tubeLog.notice("pingTrackingURL: retry ok — responseBytes=\(data.count, privacy: .public)")
                 }
             } catch {
                 tubeLog.error("pingTrackingURL: retry also failed — \(error.localizedDescription, privacy: .public)")

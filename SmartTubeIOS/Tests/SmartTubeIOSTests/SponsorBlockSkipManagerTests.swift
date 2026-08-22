@@ -83,6 +83,33 @@ struct SponsorBlockSkipManagerTests {
         // Second call while flag is set should still return true (guard path)
         let secondResult = manager.checkSponsorSkip(at: 10.0)
         #expect(secondResult == true)
+        #expect(manager.isSkippingSegment == true)
+    }
+
+    @Test("does not re-skip when time is still inside the segment after seek")
+    @MainActor func doesNotLoopWhenLandedInsideSegment() async {
+        let manager = SponsorBlockSkipManager()
+        let delegate = SpyDelegate()
+        manager.delegate = delegate
+        manager.player = AVPlayer()
+        manager.sponsorSegments = [SponsorSegment(
+            id: UUID(), start: 10.0, end: 30.0, category: .selfPromo
+        )]
+        var settings = AppSettings()
+        settings.sponsorBlockEnabled = true
+        settings.sponsorBlockActions[.selfPromo] = .skip
+        delegate.settings = settings
+
+        #expect(manager.checkSponsorSkip(at: 15.0) == true)
+        #expect(manager.isSkippingSegment == true)
+
+        let stillInside = manager.checkSponsorSkip(at: 29.8)
+        #expect(stillInside == true)
+        #expect(manager.isSkippingSegment == true)
+
+        #expect(manager.checkSponsorSkip(at: 30.0) == false)
+        #expect(manager.isSkippingSegment == false)
+        #expect(manager.checkSponsorSkip(at: 30.2) == false)
     }
 
     // MARK: - 3. .showToast category surfaces currentToastSegment

@@ -4,6 +4,9 @@ import CoreFoundation
 import WebKit
 import os
 import SmartTubeIOSCore
+#if os(macOS)
+import AppKit
+#endif
 
 private let tosLog = Logger(subsystem: "com.void.smarttube.app", category: "TOSPlayer")
 
@@ -52,7 +55,7 @@ extension TOSPlayerViewModel {
             // `embedFrameInfo`'s doc comment for the full root-cause story.
             if embedFrameInfo == nil {
                 embedFrameInfo = frameInfo
-                tosLog.notice("[frame] captured embed iframe frameInfo — isMainFrame=\(frameInfo.isMainFrame, privacy: .public) url=\(frameInfo.request.url?.absoluteString ?? "nil", privacy: .public)")
+                tosLog.notice("[frame] captured embed iframe frameInfo — isMainFrame=\(frameInfo.isMainFrame, privacy: .public)")
             }
             isReady = true
             let readyDuration = (json["duration"] as? Double) ?? 0
@@ -307,8 +310,26 @@ extension TOSPlayerViewModel {
                 )
                 return
             }
-            guard let image = image, let data = image.pngData() else {
+            guard let image else {
                 tosLog.error("[snapshot] no image/PNG data returned")
+                completion?(false)
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFNotificationName("com.void.smarttube.tosplayer.snapshot.taken" as CFString),
+                    nil, nil, true
+                )
+                return
+            }
+            let data: Data?
+            #if os(macOS)
+            data = image.tiffRepresentation
+                .flatMap(NSBitmapImageRep.init(data:))?
+                .representation(using: .png, properties: [:])
+            #else
+            data = image.pngData()
+            #endif
+            guard let data else {
+                tosLog.error("[snapshot] image could not be encoded as PNG")
                 completion?(false)
                 CFNotificationCenterPostNotification(
                     CFNotificationCenterGetDarwinNotifyCenter(),

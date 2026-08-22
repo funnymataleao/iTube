@@ -23,7 +23,14 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
 
     var homeResult: VideoGroup = VideoGroup(title: "Home", videos: [])
     var homeRowsResult: [VideoGroup] = []
+    var homeRowsHandler: ((String?) -> [VideoGroup])? = nil
+    var guestHomeRowsResult: [VideoGroup] = []
+    var guestHomeRowsDelay: Duration? = nil
+    var homeShelfResult: VideoGroup = VideoGroup(videos: [])
     var subscriptionsResult: VideoGroup = VideoGroup(title: "Subs", videos: [])
+    var subscriptionsHandler: ((String?) async throws -> VideoGroup)? = nil
+    var videoTopicMetadataResult: [String: VideoTopicMetadata] = [:]
+    var videoTopicMetadataHandler: (([String]) async throws -> [String: VideoTopicMetadata])? = nil
     var historyResult: VideoGroup = VideoGroup(title: "History", videos: [])
     var shortsResult: VideoGroup = VideoGroup(title: "Shorts", videos: [])
     var shortsMoreResult: VideoGroup = VideoGroup(title: "Shorts", videos: [])
@@ -47,11 +54,19 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
     var suggestionsResult: [String] = []
     var playlistVideosResult: VideoGroup = VideoGroup(title: "Playlist", videos: [])
     var errorToThrow: Error? = nil
+    var authTokenSetDelays: [String: Duration] = [:]
+    private(set) var currentAuthToken: String?
 
     // MARK: - Protocol conformance
 
     func setAuthToken(_ token: String?) async {
-        calls.append(Call(method: "setAuthToken", args: [token ?? "nil"]))
+        let key = token ?? "nil"
+        calls.append(Call(method: "setAuthToken.started", args: [key]))
+        if let delay = authTokenSetDelays[key] {
+            try? await Task.sleep(for: delay)
+        }
+        currentAuthToken = token
+        calls.append(Call(method: "setAuthToken", args: [key]))
     }
 
     func setSAPISID(_ value: String?) async {
@@ -67,13 +82,41 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
     func fetchHomeRows(continuationToken: String?) async throws -> [VideoGroup] {
         calls.append(Call(method: "fetchHomeRows", args: [continuationToken ?? "nil"]))
         if let e = errorToThrow { throw e }
+        if let handler = homeRowsHandler { return handler(continuationToken) }
         return homeRowsResult
+    }
+
+    func fetchGuestHomeRows() async throws -> [VideoGroup] {
+        calls.append(Call(method: "fetchGuestHomeRows", args: []))
+        if let guestHomeRowsDelay { try await Task.sleep(for: guestHomeRowsDelay) }
+        if let e = errorToThrow { throw e }
+        return guestHomeRowsResult
+    }
+
+    func fetchHomeShelf(continuationToken: String) async throws -> VideoGroup {
+        calls.append(Call(method: "fetchHomeShelf", args: [continuationToken]))
+        if let e = errorToThrow { throw e }
+        return homeShelfResult
     }
 
     func fetchSubscriptions(continuationToken: String?) async throws -> VideoGroup {
         calls.append(Call(method: "fetchSubscriptions", args: [continuationToken ?? "nil"]))
         if let e = errorToThrow { throw e }
+        if let subscriptionsHandler {
+            return try await subscriptionsHandler(continuationToken)
+        }
         return subscriptionsResult
+    }
+
+    func fetchVideoTopicMetadata(
+        videoIDs: [String]
+    ) async throws -> [String: VideoTopicMetadata] {
+        calls.append(Call(method: "fetchVideoTopicMetadata", args: videoIDs))
+        if let e = errorToThrow { throw e }
+        if let videoTopicMetadataHandler {
+            return try await videoTopicMetadataHandler(videoIDs)
+        }
+        return videoTopicMetadataResult
     }
 
     func fetchHistory(continuationToken: String?) async throws -> VideoGroup {
@@ -501,6 +544,353 @@ struct HomeViewModelTests {
 @MainActor
 struct BrowseViewModelTests {
 
+    @Test("Home keeps legitimate overlap between different personalized shelves")
+    func homeKeepsCrossShelfDuplicates() async {
+        let mock = MockInnerTubeAPI()
+        let shared = makeVideo("shared_AAAAA")
+        mock.homeRowsResult = [
+            VideoGroup(title: "Recommended", videos: [shared, makeVideo("rec_BBBBB")], layout: .row),
+            VideoGroup(title: "Gaming", videos: [shared, makeVideo("game_CCCCC")], layout: .row)
+        ]
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        await vm.updateAuthToken("fake-token")
+        vm.loadContent(for: section, refresh: true, source: "test")
+        await waitForTasks(until: { vm.videoGroups.count == 2 })
+
+        #expect(vm.videoGroups[0].videos.count == 2)
+        #expect(vm.videoGroups[1].videos.count == 2)
+        #expect(vm.videoGroups[1].videos.contains(where: { $0.id == shared.id }))
+    }
+
+    @Test("Home excludes locally watched and remotely completed recommendations")
+    func homeExcludesWatchedRecommendations() async {
+        let mock = MockInnerTubeAPI()
+        var remotelyCompleted = makeVideo("complete_CCCCC")
+        remotelyCompleted.watchProgress = 0.96
+        var partiallyWatched = makeVideo("partial_DDDDD")
+        partiallyWatched.watchProgress = 0.42
+        mock.homeRowsResult = [
+            VideoGroup(
+                title: "Recommended",
+                videos: [
+                    makeVideo("local_AAAAA"),
+                    makeVideo("fresh_BBBBB"),
+                    remotelyCompleted,
+                    partiallyWatched,
+                ],
+                layout: .row
+            )
+        ]
+
+        let vm = BrowseViewModel(
+            api: mock,
+            initialSection: BrowseSection(type: .home),
+            watchedVideoIDsProvider: { ["local_AAAAA"] }
+        )
+        await vm.updateAuthToken("fake-token")
+        await waitForTasks(until: { vm.hasCompletedInitialLoad && !vm.isLoading })
+
+        #expect(vm.videoGroups.flatMap(\.videos).map(\.id) == [
+            "fresh_BBBBB", "partial_DDDDD"
+        ])
+    }
+
+    @Test("Playback start removes a visible Home card without reordering the shelf")
+    func playbackStartSuppressesVisibleHomeCard() async {
+        let mock = MockInnerTubeAPI()
+        mock.homeRowsResult = [
+            VideoGroup(
+                title: "Recommended",
+                videos: [
+                    makeVideo("first_AAAAA"),
+                    makeVideo("watched_BBBBB"),
+                    makeVideo("third_CCCCC"),
+                ],
+                layout: .row
+            )
+        ]
+        let vm = BrowseViewModel(
+            api: mock,
+            initialSection: BrowseSection(type: .home),
+            watchedVideoIDsProvider: { [] }
+        )
+        await vm.updateAuthToken("fake-token")
+        await waitForTasks(until: { vm.videoGroups.first?.videos.count == 3 })
+
+        vm.suppressWatchedVideoFromDiscovery(id: "watched_BBBBB")
+
+        #expect(vm.videoGroups.first?.videos.map(\.id) == [
+            "first_AAAAA", "third_CCCCC"
+        ])
+    }
+
+    @Test("A Home shelf appends its own horizontal continuation page")
+    func homeShelfLoadsHorizontalContinuation() async {
+        let mock = MockInnerTubeAPI()
+        let first = makeVideo("first_AAAAA")
+        let shelfID = UUID()
+        mock.homeRowsResult = [
+            VideoGroup(
+                id: shelfID,
+                title: "Gaming",
+                videos: [first],
+                rowContinuationToken: "gaming-row-page-2",
+                layout: .row
+            )
+        ]
+        mock.homeShelfResult = VideoGroup(
+            videos: [first, makeVideo("second_BBBBB"), makeVideo("third_CCCCC")],
+            nextPageToken: nil,
+            layout: .row
+        )
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        await vm.updateAuthToken("fake-token")
+        vm.loadContent(for: section, refresh: true, source: "test")
+        await waitForTasks(until: { vm.videoGroups.first?.id == shelfID })
+
+        vm.loadMoreHomeShelfIfNeeded(shelfID: shelfID, lastVideo: first)
+        await waitForTasks(until: { vm.videoGroups.first?.videos.count == 3 })
+
+        #expect(mock.calls.contains {
+            $0.method == "fetchHomeShelf" && $0.args == ["gaming-row-page-2"]
+        })
+        #expect(vm.videoGroups.first?.videos.map(\.id) == [
+            "first_AAAAA", "second_BBBBB", "third_CCCCC"
+        ])
+        #expect(vm.videoGroups.first?.rowContinuationToken == nil)
+    }
+
+    @Test("Home vertical pagination loads more shelves without horizontal scrolling")
+    func homeLoadsMoreVerticalShelves() async {
+        let mock = MockInnerTubeAPI()
+        mock.homeRowsHandler = { token in
+            switch token {
+            case nil:
+                return [
+                    VideoGroup(title: "Recommended", videos: [makeVideo("rec_AAAAA")], layout: .row),
+                    VideoGroup(title: "Top news", videos: [makeVideo("news_BBBBB")], layout: .row),
+                    VideoGroup(
+                        title: "Recently uploaded",
+                        videos: [makeVideo("recent_CCCCC")],
+                        nextPageToken: "home-page-2",
+                        layout: .row
+                    )
+                ]
+            case "home-page-2":
+                return [
+                    VideoGroup(title: "Gaming", videos: [makeVideo("game_DDDDD")], layout: .row),
+                    VideoGroup(
+                        title: "Science & Space",
+                        videos: [makeVideo("space_EEEEE")],
+                        nextPageToken: "home-page-3",
+                        layout: .row
+                    )
+                ]
+            default:
+                return []
+            }
+        }
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        await vm.updateAuthToken("fake-token")
+        vm.loadContent(for: section, refresh: true, source: "test")
+        await waitForTasks(until: { vm.videoGroups.count == 3 })
+
+        vm.loadMoreHomeRowsIfNeeded()
+        await waitForTasks(until: { vm.videoGroups.count == 5 })
+
+        #expect(mock.calls.contains {
+            $0.method == "fetchHomeRows" && $0.args == ["home-page-2"]
+        })
+        #expect(vm.videoGroups.map(\.title) == [
+            "Recommended", "Top news", "Recently uploaded", "Gaming", "Science & Space"
+        ])
+        #expect(vm.videoGroups.last?.nextPageToken == "home-page-3")
+    }
+
+    @Test("Guest Home uses public topic shelves without Recommended or Shorts")
+    func guestHomeUsesPublicTopicShelves() async {
+        let mock = MockInnerTubeAPI()
+        var short = makeVideo("short_AAAAA")
+        short.isShort = true
+        mock.guestHomeRowsResult = [
+            VideoGroup(title: "Recommended", videos: [makeVideo("rec_AAAAA")], layout: .row),
+            VideoGroup(
+                title: "Top news",
+                videos: [makeVideo("news_BBBBB"), short],
+                layout: .row
+            ),
+            VideoGroup(title: "Trending", videos: [makeVideo("sport_CCCCC")], layout: .row),
+        ]
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        vm.loadContent(for: section, refresh: true, source: "test.guest")
+        await waitForTasks(until: { vm.videoGroups.count == 2 })
+
+        #expect(vm.videoGroups.compactMap(\.title) == ["Top news", "Trending"])
+        #expect(vm.videoGroups.flatMap(\.videos).allSatisfy { !$0.isShort })
+        #expect(!vm.isAuthRequired)
+        #expect(mock.calls.contains { $0.method == "fetchGuestHomeRows" })
+        #expect(!mock.calls.contains { $0.method == "fetchHomeRows" })
+        #expect(!mock.calls.contains { $0.method == "fetchSubscriptions" })
+        #expect(!mock.calls.contains { $0.method == "fetchShorts" })
+        #expect(!mock.calls.contains { $0.method == "search" })
+    }
+
+    @Test("Guest Home recognizes localized personalized shelf titles")
+    func guestHomeRecognizesLocalizedPersonalizedTitles() {
+        let personalized = [
+            "Recommended", "Рекомендованные", "Empfohlen", "Recommandations",
+            "الفيديوهات المقترحة", "आपके लिए", "あなたへのおすすめ", "맞춤 동영상", "推荐视频",
+            "Aanbevolen", "Polecane", "Rekommenderat", "Προτεινόμενα",
+            "מומלץ", "แนะนำ", "Đề xuất"
+        ]
+        #expect(personalized.allSatisfy(BrowseViewModel.isGuestPersonalizedShelfTitle))
+        #expect(!BrowseViewModel.isGuestPersonalizedShelfTitle("Top news"))
+        #expect(!BrowseViewModel.isGuestPersonalizedShelfTitle("Live sports"))
+    }
+
+    @Test("Empty guest topic responses surface an error instead of a blank Home")
+    func emptyGuestHomeSurfacesError() async {
+        let mock = MockInnerTubeAPI()
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+
+        vm.loadContent(for: section, refresh: true, source: "test.guest.empty")
+        await waitForTasks(until: { vm.error != nil })
+
+        #expect(vm.videoGroups.isEmpty)
+        #expect(vm.error != nil)
+        #expect(!vm.isAuthRequired)
+        #expect(!mock.calls.contains { $0.method == "search" })
+    }
+
+    @Test("Signing out replaces personalized Home with public topic shelves")
+    func signOutReloadsGuestHome() async {
+        let mock = MockInnerTubeAPI()
+        mock.homeRowsResult = [
+            VideoGroup(title: "Recommended", videos: [makeVideo("personal_AAAAA")], layout: .row)
+        ]
+        mock.guestHomeRowsResult = [
+            VideoGroup(title: "Trending videos", videos: [makeVideo("public_BBBBB")], layout: .row)
+        ]
+
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+        await vm.updateAuthToken("fake-token")
+        await waitForTasks(until: { vm.videoGroups.first?.title == "Recommended" })
+
+        await vm.updateAuthToken(nil)
+        await waitForTasks(until: { vm.videoGroups.first?.title == "Trending videos" })
+
+        #expect(vm.videoGroups.flatMap(\.videos).map(\.id) == ["public_BBBBB"])
+        #expect(mock.calls.contains { $0.method == "fetchGuestHomeRows" })
+        #expect(mock.calls.filter { $0.method == "fetchHomeRows" }.count == 1)
+    }
+
+    @Test("Signed-in Home bootstrap starts one personalized request")
+    func signedInHomeBootstrapIsSingleRequest() async {
+        let mock = MockInnerTubeAPI()
+        mock.homeRowsResult = [
+            VideoGroup(title: "Recommended", videos: [makeVideo("personal_AAAAA")], layout: .row)
+        ]
+        let vm = BrowseViewModel(api: mock, initialSection: BrowseSection(type: .home))
+
+        await vm.updateAuthToken("fake-token")
+        await waitForTasks(until: { vm.hasCompletedInitialLoad && !vm.isLoading })
+
+        #expect(mock.calls.filter { $0.method == "fetchHomeRows" }.count == 1)
+        #expect(!mock.calls.contains { $0.method == "fetchGuestHomeRows" })
+    }
+
+    @Test("Repeated identical auth propagation does not reload shared Home")
+    func repeatedAuthStateDoesNotReloadHome() async {
+        let mock = MockInnerTubeAPI()
+        mock.homeRowsResult = [
+            VideoGroup(title: "Recommended", videos: [makeVideo("personal_AAAAA")], layout: .row)
+        ]
+        let vm = BrowseViewModel(
+            api: mock,
+            initialSection: BrowseSection(type: .home),
+            watchedVideoIDsProvider: { [] }
+        )
+
+        await vm.updateAuthToken("fake-token")
+        await waitForTasks(until: { vm.hasCompletedInitialLoad && !vm.isLoading })
+        await vm.updateAuthToken("fake-token")
+        await waitForTasks()
+
+        #expect(mock.calls.filter { $0.method == "fetchHomeRows" }.count == 1)
+    }
+
+    @Test("Concurrent identical auth propagation bootstraps shared Home once")
+    func concurrentIdenticalAuthStateBootstrapsOnce() async {
+        let mock = MockInnerTubeAPI()
+        mock.authTokenSetDelays["fake-token"] = .milliseconds(75)
+        mock.homeRowsResult = [
+            VideoGroup(title: "Recommended", videos: [makeVideo("personal_AAAAA")], layout: .row)
+        ]
+        let vm = BrowseViewModel(
+            api: mock,
+            initialSection: BrowseSection(type: .home),
+            watchedVideoIDsProvider: { [] }
+        )
+
+        let firstUpdate = Task { await vm.updateAuthToken("fake-token") }
+        await waitForTasks(until: {
+            mock.calls.contains { $0.method == "setAuthToken.started" && $0.args == ["fake-token"] }
+        })
+        await vm.updateAuthToken("fake-token")
+        await firstUpdate.value
+        await waitForTasks(until: { vm.hasCompletedInitialLoad && !vm.isLoading })
+
+        #expect(mock.calls.filter { $0.method == "setAuthToken.started" }.count == 1)
+        #expect(mock.calls.filter { $0.method == "fetchHomeRows" }.count == 1)
+    }
+
+    @Test("Overlapping sign-out wins over a delayed older auth update")
+    func overlappingSignOutIsLatestValueWins() async {
+        let mock = MockInnerTubeAPI()
+        mock.authTokenSetDelays["old-token"] = .milliseconds(75)
+        mock.guestHomeRowsResult = [
+            VideoGroup(title: "Trending", videos: [makeVideo("public_CCCCC")], layout: .row)
+        ]
+        let vm = BrowseViewModel(api: mock, initialSection: BrowseSection(type: .home))
+
+        let oldUpdate = Task { await vm.updateAuthToken("old-token") }
+        await waitForTasks(until: {
+            mock.calls.contains { $0.method == "setAuthToken.started" && $0.args == ["old-token"] }
+        })
+        await vm.updateAuthToken(nil)
+        await oldUpdate.value
+
+        #expect(mock.currentAuthToken == nil)
+        #expect(mock.calls.last(where: { $0.method == "setAuthToken" })?.args == ["nil"])
+    }
+
+    @Test("Overlapping token refresh keeps the newest token")
+    func overlappingTokenRefreshIsLatestValueWins() async {
+        let mock = MockInnerTubeAPI()
+        mock.authTokenSetDelays["old-token"] = .milliseconds(75)
+        let vm = BrowseViewModel(api: mock, initialSection: BrowseSection(type: .home))
+
+        let oldUpdate = Task { await vm.updateAuthToken("old-token") }
+        await waitForTasks(until: {
+            mock.calls.contains { $0.method == "setAuthToken.started" && $0.args == ["old-token"] }
+        })
+        await vm.updateAuthToken("new-token")
+        await oldUpdate.value
+
+        #expect(mock.currentAuthToken == "new-token")
+        #expect(mock.calls.last(where: { $0.method == "setAuthToken" })?.args == ["new-token"])
+    }
+
     @Test("loadContent for .subscriptions calls fetchSubscriptions and populates videoGroups")
     func loadSubscriptionsPopulatesGroups() async {
         let mock = MockInnerTubeAPI()
@@ -589,26 +979,50 @@ struct BrowseViewModelTests {
         #expect(vm.error != nil)
     }
 
-    @Test("isLoading is false after fetch completes")
-    func isLoadingFalseAfterFetch() async {
+    @Test("Initial load publishes loading synchronously and completes once")
+    func initialLoadStateIsContinuous() async {
         let mock = MockInnerTubeAPI()
         mock.subscriptionsResult = VideoGroup(title: "Subs", videos: [makeVideo("vid_AAAAAAA")])
 
         let section = BrowseSection(id: "subscriptions", title: "Subscriptions", type: .subscriptions)
         let vm = BrowseViewModel(api: mock, initialSection: section)
+        #expect(!vm.hasCompletedInitialLoad)
+
         vm.loadContent(for: section, refresh: true, source: "test")
-        // isLoading is false both before the fetch starts and after it ends, so
-        // it can't be the polling condition on its own — and requiring a
-        // recorded mock call doesn't work either, since unauthenticated
-        // .subscriptions takes a local-store path that never calls the mock API
-        // at all (see "Empty subscriptions (local path)" above). loadedAt is set
-        // inside fetchSection's withThrowingTaskGroup body (BrowseViewModel.swift:475),
-        // which can fire before the outer function (and its `defer { isLoading = false }`)
-        // actually returns if other group children are still running — so require
-        // both signals together rather than relying on loadedAt alone.
-        await waitForTasks(until: { vm.loadedAt != nil && !vm.isLoading })
+        #expect(vm.isLoading)
+        #expect(!vm.hasCompletedInitialLoad)
+
+        await waitForTasks(until: { vm.hasCompletedInitialLoad && !vm.isLoading })
 
         #expect(!vm.isLoading)
+        #expect(vm.hasCompletedInitialLoad)
+    }
+
+    @Test("A cancelled load cannot clear the replacement load state")
+    func cancelledLoadDoesNotFinishReplacement() async {
+        let mock = MockInnerTubeAPI()
+        mock.guestHomeRowsDelay = .milliseconds(100)
+        mock.guestHomeRowsResult = [
+            VideoGroup(title: "Trending", videos: [makeVideo("vid_AAAAAAA")])
+        ]
+        let section = BrowseSection(type: .home)
+        let vm = BrowseViewModel(api: mock, initialSection: section)
+
+        vm.loadContent(for: section, refresh: true, source: "test.first")
+        await waitForTasks(until: {
+            mock.calls.filter { $0.method == "fetchGuestHomeRows" }.count == 1
+        })
+
+        vm.loadContent(for: section, refresh: true, source: "test.replacement")
+        await waitForTasks(until: {
+            mock.calls.filter { $0.method == "fetchGuestHomeRows" }.count == 2
+        })
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(vm.isLoading)
+        #expect(!vm.hasCompletedInitialLoad)
+
+        await waitForTasks(until: { vm.hasCompletedInitialLoad && !vm.isLoading })
     }
 }
 
@@ -630,6 +1044,20 @@ struct SearchViewModelTests {
 
         #expect(!vm.results.isEmpty)
         #expect(vm.results[0].id == "result_AAAAA")
+    }
+
+    @Test("updateResults() searches while the tvOS keyboard is still active")
+    func liveSearchPopulatesResults() async {
+        let mock = MockInnerTubeAPI()
+        mock.searchResult = VideoGroup(title: "Results", videos: [makeVideo("live_AAAAAAA")])
+
+        let vm = makeSearchViewModel(api: mock)
+        vm.query = "gamehub"
+        await vm.updateResults(for: vm.query)
+        await waitForTasks(until: { !vm.isLoading && !vm.results.isEmpty })
+
+        #expect(vm.results.first?.id == "live_AAAAAAA")
+        #expect(mock.calls.contains { $0.method == "search" })
     }
 
     @Test("search() with whitespace-only query is a no-op")

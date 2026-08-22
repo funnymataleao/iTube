@@ -41,6 +41,20 @@ public final class SettingsStore {
         } else {
             self.settings = AppSettings()
         }
+        #if os(tvOS)
+        // Quality, audio, and subtitle choices now live in the native AVKit player.
+        // Clear legacy global values so a removed Settings row can never continue
+        // affecting playback invisibly for an existing installation.
+        if settings.preferredQuality != .auto
+            || settings.preferredAudioLanguage != nil
+            || settings.preferredCaptionLanguage != nil {
+            var normalized = settings
+            normalized.preferredQuality = .auto
+            normalized.preferredAudioLanguage = nil
+            normalized.preferredCaptionLanguage = nil
+            settings = normalized
+        }
+        #endif
         // Reset settings to defaults when launched for UI testing so each test
         // suite starts from a clean, known state and prior runs cannot bleed in.
         if ProcessInfo.processInfo.arguments.contains("--uitesting-reset-settings") {
@@ -70,7 +84,6 @@ public final class SettingsStore {
         if let data = try? JSONEncoder().encode(settings) {
             UserDefaults.standard.set(data, forKey: Self.key)
         }
-        iCloudSyncManager.shared.syncEnabled = settings.iCloudSyncEnabled
     }
 
     public func reset() {

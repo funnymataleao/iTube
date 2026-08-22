@@ -4,7 +4,7 @@ import XCTest
 //
 // End-to-end tests for the Share Extension that drive the FULL system-level flow:
 //
-//   Safari  →  share sheet  →  tap "SmartTube"  →  SmartTube app foregrounds
+//   Safari  →  share sheet  →  tap "iTube"  →  iTube app foregrounds
 //                                                   →  video player opens
 //
 // Root cause of the "blink" bug (fixed in ShareViewController):
@@ -16,7 +16,7 @@ import XCTest
 //
 // Prerequisites:
 //   • The simulator must have network access (YouTube URL must be navigable in Safari).
-//   • The "SmartTube" extension must be enabled in the iOS share sheet.
+//   • The "iTube" extension must be enabled in the iOS share sheet.
 //     If it has never been used on this simulator, open the share sheet manually
 //     once and tap "More" to enable it, or reset the simulator.
 //   • These tests are intentionally split from `ShareExtensionUITests` (which uses
@@ -25,7 +25,7 @@ import XCTest
 // Skips gracefully when network is unavailable or Safari UI cannot be navigated.
 
 private let kTestVideoURL  = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-private let kExtensionName = "SmartTube"   // CFBundleDisplayName in ShareExtension/Info.plist
+private let kExtensionName = "iTube"   // CFBundleDisplayName in ShareExtension/Info.plist
 
 final class ShareExtensionE2EUITests: XCTestCase {
 
@@ -103,7 +103,7 @@ final class ShareExtensionE2EUITests: XCTestCase {
         let appOpened = smartTube.wait(for: .runningForeground, timeout: 15)
         guard appOpened else {
             try captureAndSkip(
-                "SmartTube did not come to the foreground after tapping the share extension — " +
+                "iTube did not come to the foreground after tapping the share extension — " +
                 "Share Extension infrastructure (enabled extension, network) not ready on this simulator clone.",
                 in: smartTube
             )
@@ -113,7 +113,7 @@ final class ShareExtensionE2EUITests: XCTestCase {
         guard waitForPlayerToOpen(in: smartTube, timeout: 20) else {
             try captureAndSkip(
                 "Neither player.titleLabel nor tosPlayer.stateLabel appeared within 20 s — " +
-                "SmartTube opened but InnerTube may not have resolved the video (network unavailable)",
+                "iTube opened but InnerTube may not have resolved the video (network unavailable)",
                 in: smartTube
             )
         }
@@ -139,7 +139,7 @@ final class ShareExtensionE2EUITests: XCTestCase {
         try tapExtension(named: kExtensionName)
 
         guard smartTube.wait(for: .runningForeground, timeout: 15) else {
-            try captureAndSkip("SmartTube did not come to the foreground — Share Extension infrastructure not ready on this simulator clone", in: smartTube)
+            try captureAndSkip("iTube did not come to the foreground — Share Extension infrastructure not ready on this simulator clone", in: smartTube)
         }
 
         guard waitForPlayerToOpen(in: smartTube, timeout: 20) else {

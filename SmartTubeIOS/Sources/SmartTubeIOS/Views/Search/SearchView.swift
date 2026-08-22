@@ -13,6 +13,7 @@ public struct SearchView: View {
     @State private var selectedVideo: Video?
     @State private var channelDestination: ChannelDestination?
     @State private var showFilterSheet = false
+    @State private var showClearHistoryConfirmation = false
     @FocusState private var isSearchFocused: Bool
     #if os(iOS)
     @Environment(PlayerRouter.self) private var playerRouter
@@ -21,18 +22,25 @@ public struct SearchView: View {
     public init() {}
 
     public var body: some View {
+        @Bindable var vm = vm
         VStack(spacing: 0) {
+            #if !os(tvOS)
             searchBar
             Divider()
+            #endif
             if !vm.query.isEmpty {
                 filterChipsRow
             }
             Group {
                 #if os(tvOS)
-                if vm.isLoading || !vm.results.isEmpty {
+                if vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    tvOSHistoryView
+                } else if vm.displayedQuery != vm.query.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    searchPendingView
+                } else if vm.isLoading || !vm.results.isEmpty {
                     resultsView
-                } else if vm.query.isEmpty {
-                    suggestionsListView
+                } else if vm.error != nil {
+                    searchErrorView
                 } else {
                     noResultsView
                 }
@@ -50,8 +58,11 @@ public struct SearchView: View {
             }
         }
         #if os(tvOS)
-        .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(item: $selectedVideo) { video in
+        .searchable(text: $vm.query, prompt: "Search YouTube")
+        .onSubmit(of: .search) {
+            vm.search()
+        }
+        .fullScreenCover(item: $selectedVideo) { video in
             PlayerView(video: video, api: api)
         }
         #elseif os(iOS)
@@ -69,9 +80,21 @@ public struct SearchView: View {
                 vm.applyFilter(newFilter)
             }
         }
-        .task(id: vm.query) { await vm.updateSuggestions(for: vm.query) }
+        .confirmationDialog(
+            "Clear History",
+            isPresented: $showClearHistoryConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) { vm.clearHistory() }
+            Button("Cancel", role: .cancel) {}
+        }
+        #if os(tvOS)
+        .task(id: vm.query) {
+            await vm.updateResults(for: vm.query)
+        }
+        #endif
         .onChange(of: isSearchFocused) { _, focused in
-            if focused { Task { await vm.updateSuggestions(for: vm.query) } }
+            // if focused { Task { await vm.updateSuggestions(for: vm.query) } }
         }
     }
 
@@ -82,15 +105,21 @@ public struct SearchView: View {
         return HStack(spacing: 8) {
             Image(systemName: AppSymbol.search)
                 .foregroundStyle(.secondary)
+            #if os(macOS)
+            TextField("Search YouTube", text: $vm.query)
+                .focused($isSearchFocused)
+                .submitLabel(.search)
+                .accessibilityIdentifier("search.bar")
+                .onSubmit { vm.search(); isSearchFocused = false }
+            #else
             TextField("Search YouTube", text: $vm.query)
                 .focused($isSearchFocused)
                 .submitLabel(.search)
                 .autocorrectionDisabled()
                 .accessibilityIdentifier("search.bar")
-                #if os(iOS)
                 .textInputAutocapitalization(.never)
-                #endif
                 .onSubmit { vm.search(); isSearchFocused = false }
+            #endif
             if !vm.query.isEmpty {
                 Button {
                     vm.query = ""
@@ -154,11 +183,10 @@ public struct SearchView: View {
     // MARK: - Results
 
     private var resultsView: some View {
-        let hideShorts = store.settings.hideShorts
         let hideLiveShorts = store.settings.hideLiveShorts
         let hideVideoPremieres = store.settings.hideVideoPremieres
         let displayResults = vm.results
-            .filter { !hideShorts || !$0.isShort }
+            .filter { !$0.isShort }
             .filter { !hideLiveShorts || !($0.isLive && $0.isShort) }
             .filter { !hideVideoPremieres || !$0.isUpcoming }
         return ScrollView {
@@ -196,8 +224,42 @@ public struct SearchView: View {
 
     // MARK: - Suggestions list (history + recommended/live)
 
+    #if os(tvOS)
+    private var tvOSHistoryView: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 28) {
+                if vm.history.isEmpty {
+                    placeholderView
+                        .frame(minHeight: 430)
+                } else {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Recent")
+                            .font(.largeTitle.weight(.bold))
+                        Spacer()
+                        Button("Clear History", role: .destructive) {
+                            showClearHistoryConfirmation = true
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("search.history.clearAll")
+                    }
+
+                    SearchHistoryPreviewGrid(entries: Array(vm.history.prefix(12))) { entry in
+                        vm.query = entry.query
+                        vm.search()
+                        isSearchFocused = false
+                    }
+                }
+            }
+            .padding(.horizontal, 80)
+            .padding(.top, 30)
+            .padding(.bottom, 80)
+        }
+        .accessibilityIdentifier("search.suggestionsContainer")
+    }
+    #endif
+
     private var suggestionsListView: some View {
-        let suggestionsHeader = vm.query.isEmpty ? "Recommended" : "Suggestions"
+        let _ = vm.query.isEmpty ? "Recommended" : "Suggestions"
         return List {
             // History section — only shown when there are matching entries
             if !vm.filteredHistory.isEmpty {
@@ -244,34 +306,34 @@ public struct SearchView: View {
             }
 
             // Suggestions / Recommended section (existing behaviour)
-            Section(header: Text(suggestionsHeader).font(.caption).foregroundStyle(.secondary)) {
-                ForEach(vm.suggestions, id: \.self) { suggestion in
-                    Button {
-                        vm.query = suggestion
-                        vm.search()
-                        isSearchFocused = false
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: AppSymbol.search)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 20)
-                            Text(suggestion)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Button {
-                                vm.query = suggestion
-                            } label: {
-                                Image(systemName: "arrow.up.left")
-                                    .foregroundStyle(.secondary)
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+            // Section(header: Text(suggestionsHeader).font(.caption).foregroundStyle(.secondary)) {
+            //     ForEach(vm.suggestions, id: \.self) { suggestion in
+            //         Button {
+            //             vm.query = suggestion
+            //             vm.search()
+            //             isSearchFocused = false
+            //         } label: {
+            //                         //             HStack(spacing: 12) {
+            //                 Image(systemName: AppSymbol.search)
+            //                     .foregroundStyle(.secondary)
+            //                     .frame(width: 20)
+            //                 Text(suggestion)
+            //                     .foregroundStyle(.primary)
+            //                 Spacer()
+            //                 Button {
+            //                     vm.query = suggestion
+            //                 } label: {
+            //                     Image(systemName: "arrow.up.left")
+            //                         .foregroundStyle(.secondary)
+            //                         .font(.caption)
+            //                 }
+            //                 .buttonStyle(.plain)
+            //             }
+            //             .contentShape(Rectangle())
+            //         }
+            //         .buttonStyle(.plain)
+            //     }
+            // }
         }
         .listStyle(.plain)
         .accessibilityIdentifier("search.suggestionsContainer")
@@ -313,7 +375,221 @@ public struct SearchView: View {
         .onTapGesture { isSearchFocused = false }
         #endif
     }
+
+    #if os(tvOS)
+    private var searchPendingView: some View {
+        VStack(spacing: 18) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Searching YouTube…")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var searchErrorView: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 60))
+                .foregroundStyle(.secondary)
+            Text("Couldn’t search YouTube")
+                .font(.headline)
+            if let error = vm.error {
+                Text(error.localizedDescription)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+            }
+            Button("Try Again") {
+                vm.retry()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(80)
+    }
+    #endif
 }
+
+#if os(tvOS)
+// MARK: - tvOS search history previews
+
+private struct SearchHistoryPreviewGrid: View {
+    let entries: [SearchHistoryEntry]
+    let onSelect: (SearchHistoryEntry) -> Void
+
+    private let columnCount = 3
+    private let cardWidth: CGFloat = 520
+
+    private var rows: [[SearchHistoryEntry]] {
+        stride(from: 0, to: entries.count, by: columnCount).map { start in
+            Array(entries[start..<min(start + columnCount, entries.count)])
+        }
+    }
+
+    var body: some View {
+        Grid(horizontalSpacing: 32, verticalSpacing: 48) {
+            ForEach(rows.indices, id: \.self) { rowIndex in
+                GridRow(alignment: .top) {
+                    ForEach(rows[rowIndex]) { entry in
+                        SearchHistoryPreviewCard(entry: entry) {
+                            onSelect(entry)
+                        }
+                        .frame(width: cardWidth)
+                    }
+
+                    ForEach(rows[rowIndex].count..<columnCount, id: \.self) { _ in
+                        Color.clear
+                            .frame(width: cardWidth, height: 1)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
+    }
+}
+
+private struct SearchHistoryPreviewCard: View {
+    let entry: SearchHistoryEntry
+    let action: () -> Void
+
+    @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 16) {
+                SearchHistoryArtwork(videoIDs: entry.previewVideoIDs ?? [])
+                    .frame(height: 292)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .strokeBorder(
+                                Color.white.opacity(isFocused ? 0.72 : (reduceTransparency ? 0.24 : 0.1)),
+                                lineWidth: isFocused ? 3 : 1
+                            )
+                    }
+                    .shadow(
+                        color: isFocused ? Color.accentColor.opacity(0.32) : .black.opacity(0.24),
+                        radius: isFocused ? 24 : 12,
+                        y: isFocused ? 12 : 7
+                    )
+
+                HStack(spacing: 15) {
+                    Image(systemName: AppSymbol.search)
+                        .font(.title3.weight(.bold))
+                        .frame(width: 54, height: 54)
+                        .foregroundStyle(.white)
+                        .background(Color.accentColor.gradient, in: RoundedRectangle(cornerRadius: 13))
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.query)
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(entry.timestamp, style: .relative)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .focused($isFocused)
+        .scaleEffect(isFocused ? 1.035 : 1)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isFocused)
+        .accessibilityIdentifier("search.history.\(entry.query)")
+        .accessibilityLabel(entry.query)
+    }
+}
+
+private struct SearchHistoryArtwork: View {
+    let videoIDs: [String]
+
+    private var displayedIDs: [String] {
+        Array(videoIDs.prefix(3))
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let firstID = displayedIDs.first {
+                HStack(spacing: 4) {
+                    HistoryPreviewImage(videoID: firstID)
+                        .frame(width: displayedIDs.count == 1 ? proxy.size.width : proxy.size.width * 0.665)
+
+                    if displayedIDs.count > 1 {
+                        VStack(spacing: 4) {
+                            HistoryPreviewImage(videoID: displayedIDs[1])
+                            if displayedIDs.count > 2 {
+                                HistoryPreviewImage(videoID: displayedIDs[2])
+                            }
+                        }
+                    }
+                }
+            } else {
+                ZStack {
+                    LinearGradient(
+                        colors: [Color(red: 0.24, green: 0.035, blue: 0.055), .black],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.system(size: 72, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.76))
+                }
+            }
+        }
+        .background(Color.black.opacity(0.55))
+    }
+}
+
+private struct HistoryPreviewImage: View {
+    let videoID: String
+
+    @StateObject private var loader = ThumbnailImageLoader()
+
+    private var candidates: [URL] {
+        [
+            "https://i.ytimg.com/vi/\(videoID)/maxresdefault.jpg",
+            "https://i.ytimg.com/vi/\(videoID)/hq720.jpg",
+            "https://i.ytimg.com/vi/\(videoID)/sddefault.jpg",
+            "https://i.ytimg.com/vi/\(videoID)/hqdefault.jpg",
+            "https://i.ytimg.com/vi/\(videoID)/mqdefault.jpg",
+        ].compactMap(URL.init(string:))
+    }
+
+    var body: some View {
+        ZStack {
+            Color.white.opacity(0.06)
+            if let image = loader.image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .transition(.opacity)
+            } else if loader.isLoading {
+                ProgressView()
+            } else {
+                Image(systemName: "play.rectangle")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .clipped()
+        .task(id: videoID) {
+            loader.load(candidates: candidates, videoId: videoID)
+        }
+        .onDisappear { loader.cancel() }
+    }
+}
+#endif
 
 // MARK: - FilterChip
 
@@ -353,6 +629,63 @@ struct SearchFilterSheet: View {
     }
 
     var body: some View {
+        #if os(tvOS)
+        NavigationStack {
+            List {
+                Section("Sort by") {
+                    Picker("Sort", selection: $draft.sortOrder) {
+                        ForEach(SearchFilter.SortOrder.allCases, id: \.self) { order in
+                            Text(LocalizedStringKey(order.label)).tag(order)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+
+                Section("Upload date") {
+                    Picker("Upload date", selection: $draft.uploadDate) {
+                        ForEach(SearchFilter.UploadDate.allCases, id: \.self) { date in
+                            Text(LocalizedStringKey(date.label)).tag(date)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+
+                Section(String(localized: "search.filter.type", bundle: .module)) {
+                    Picker(String(localized: "search.filter.type", bundle: .module), selection: $draft.type) {
+                        ForEach(SearchFilter.VideoType.allCases, id: \.self) { type in
+                            Text(LocalizedStringKey(type.label)).tag(type)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+
+                Section("Duration") {
+                    Picker("Duration", selection: $draft.duration) {
+                        ForEach(SearchFilter.Duration.allCases, id: \.self) { dur in
+                            Text(LocalizedStringKey(dur.label)).tag(dur)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+            .navigationTitle("Search filters")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply") {
+                        onApply(draft)
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Reset") { draft = .default }
+                        .disabled(draft.isDefault)
+                }
+            }
+        }
+        #else
         NavigationStack {
             Form {
                 Section("Sort by") {
@@ -414,10 +747,17 @@ struct SearchFilterSheet: View {
                     Button("Reset") { draft = .default }
                         .disabled(draft.isDefault)
                 }
+                #else
+                ToolbarItem(placement: .automatic) {
+                    Button("Reset") { draft = .default }
+                        .disabled(draft.isDefault)
+                }
                 #endif
             }
+            #if os(iOS)
+            .presentationDetents([.medium, .large])
+            #endif
         }
-        .presentationDetents([.medium, .large])
-        .accessibilityIdentifier("search.filterSheet")
+        #endif
     }
 }

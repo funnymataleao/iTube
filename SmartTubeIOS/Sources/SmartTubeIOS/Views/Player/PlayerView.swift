@@ -71,14 +71,6 @@ public struct PlayerView: View {
     /// Drives the quality-change toast shown after the user picks a resolution.
     @State var qualityToastMessage: String?
     #if os(tvOS)
-    @FocusState var playerFocused: Bool
-    /// Which playback control is visually highlighted in the overlay.
-    /// nil = not in controls-nav mode; all remote input targets the video layer.
-    @State var highlightedControl: TVPlayerControl? = nil
-    /// Namespace for the player ZStack itself, used with `.focusScope` +
-    /// `.prefersDefaultFocus` so the ZStack claims default focus when pushed via
-    /// NavigationStack — preventing any child view from stealing focus first.
-    @Namespace var playerBodyNamespace
     /// Namespace IDs used with `.focusScope` on picker overlays so the tvOS focus
     /// engine moves focus into the overlay when it opens.
     @Namespace var moreMenuNamespace
@@ -87,7 +79,6 @@ public struct PlayerView: View {
     @Namespace var sleepTimerNamespace
     @Namespace var captionPickerNamespace
     @Namespace var audioTrackPickerNamespace
-    @Namespace var descriptionOverlayNamespace
     @Namespace var commentsOverlayNamespace
     /// Explicitly routes Siri Remote focus when overlays open programmatically.
     /// `moreMenuFocusedRow` drives D-pad navigation within the more menu via explicit
@@ -98,7 +89,7 @@ public struct PlayerView: View {
     @FocusState var sleepTimerPickerFocused: Bool
     @FocusState var captionPickerFocused: Bool
     @FocusState var audioTrackPickerFocused: Bool
-    @FocusState var skipToastButtonFocused: Bool
+    @State var showPlaylistPicker = false
     #endif
 
     /// Scales player control icon sizes up on iPad so they're easier to tap.
@@ -121,7 +112,15 @@ public struct PlayerView: View {
     }
 
     public var body: some View {
+        #if os(tvOS)
+        NavigationStack {
+            bodyWithLifecycleModifiers
+                .toolbar(.hidden, for: .navigationBar)
+                .toolbar(.hidden, for: .tabBar)
+        }
+        #else
         bodyWithLifecycleModifiers
+        #endif
     }
 
 

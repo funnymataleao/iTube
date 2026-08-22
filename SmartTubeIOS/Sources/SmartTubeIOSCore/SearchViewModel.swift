@@ -12,23 +12,21 @@ public final class SearchViewModel {
     public var query: String = ""
     public var filter: SearchFilter = .default
     public private(set) var results: [Video] = []
-    public private(set) var suggestions: [String] = []
     public private(set) var history: [SearchHistoryEntry] = []
     public private(set) var isLoading: Bool = false
+    public private(set) var displayedQuery: String = ""
     public var error: Error?
 
     private let api: any InnerTubeAPIProtocol
     private let historyStore: SearchHistoryStore
     private var nextPageToken: String?
     private var searchTask: Task<Void, Never>?
-    private var suggestTask: Task<Void, Never>?
-    private var hideObserverTasks: [Task<Void, Never>] = []
-
-    private static let recommendedTerms: [String] = [
-        "trending videos", "music 2025", "cooking recipes", "travel vlog",
-        "programming tutorial", "workout", "movie trailer", "lofi hip hop",
-        "documentary", "gaming highlights"
-    ]
+    private var activeRequestID = UUID()
+    private var isPreviewing = false
+    private var committedQuery: String?
+    private var committedResults: [Video] = []
+    private var committedNextPageToken: String?
+    private var hideObserverTokens: [NSObjectProtocol] = []
 
     /// History entries that match the current query (case-insensitive). Returns
     /// the full history when the query is empty.
@@ -40,35 +38,47 @@ public final class SearchViewModel {
     public init(api: any InnerTubeAPIProtocol = InnerTubeAPI(), historyStore: SearchHistoryStore = .shared) {
         self.api = api
         self.historyStore = historyStore
-        suggestions = Self.recommendedTerms
-        Task { await loadHistory() }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.loadHistory()
+            #if !os(tvOS)
+            self.restoreMostRecentSearchIfNeeded()
+            #endif
+        }
         observeFeedHideNotifications()
     }
 
-    /// Call from `.task(id: query)` in the view to debounce live suggestions.
-    /// When `q` is empty, restores the recommended terms immediately.
-    public func updateSuggestions(for q: String) async {
-        print("[Suggestions] updateSuggestions called, q='\(q)'")
-        if q.isEmpty {
-            print("[Suggestions] Empty query — restoring recommendedTerms")
-            suggestions = Self.recommendedTerms
+    isolated deinit {
+        for token in hideObserverTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
+    /// Debounces remote-keyboard input and refreshes the video grid without
+    /// polluting the user's submitted search history.
+    public func updateResults(for rawQuery: String) async {
+        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            if isPreviewing {
+                searchTask?.cancel()
+            }
+            restoreCommittedResults()
             return
         }
-        try? await Task.sleep(for: .milliseconds(300))
-        guard !Task.isCancelled else {
-            print("[Suggestions] Task cancelled before fetch")
+
+        do {
+            try await Task.sleep(for: .milliseconds(450))
+        } catch {
             return
         }
-        fetchSuggestions(for: q)
+        guard !Task.isCancelled, trimmed != displayedQuery || results.isEmpty else { return }
+        startSearch(query: trimmed, isPreview: true)
     }
 
     public func search() {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        results = []
-        nextPageToken = nil
-        searchTask?.cancel()
-        searchTask = Task { await performSearch(query: trimmed, filter: filter) }
+        startSearch(query: trimmed, isPreview: false)
         Task { await recordSearch(trimmed) }
     }
 
@@ -104,52 +114,127 @@ public final class SearchViewModel {
     /// Apply a new filter and re-run the current search immediately.
     public func applyFilter(_ newFilter: SearchFilter) {
         filter = newFilter
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        results = []
-        nextPageToken = nil
-        searchTask?.cancel()
-        searchTask = Task { await performSearch(query: query, filter: filter) }
+        let typedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetQuery = typedQuery.isEmpty ? displayedQuery : typedQuery
+        guard !targetQuery.isEmpty else { return }
+        startSearch(query: targetQuery, isPreview: !typedQuery.isEmpty && isPreviewing)
     }
 
     public func loadMore() {
         guard let token = nextPageToken, !isLoading else { return }
-        searchTask = Task { await performSearch(query: query, continuationToken: token, filter: filter) }
+        let requestID = activeRequestID
+        let targetQuery = displayedQuery
+        let preview = isPreviewing
+        let currentFilter = filter
+        searchTask = Task { [weak self] in
+            await self?.performSearch(
+                query: targetQuery,
+                continuationToken: token,
+                filter: currentFilter,
+                isPreview: preview,
+                requestID: requestID
+            )
+        }
     }
 
-    private func performSearch(query: String, continuationToken: String? = nil, filter: SearchFilter = .default) async {
+    public func retry() {
+        let typedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetQuery = typedQuery.isEmpty ? displayedQuery : typedQuery
+        guard !targetQuery.isEmpty else { return }
+        startSearch(query: targetQuery, isPreview: !typedQuery.isEmpty && isPreviewing)
+    }
+
+    private func restoreMostRecentSearchIfNeeded() {
+        guard committedQuery == nil,
+              results.isEmpty,
+              query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let latestQuery = history.first?.query else { return }
+        startSearch(query: latestQuery, isPreview: false)
+    }
+
+    private func restoreCommittedResults() {
+        guard let committedQuery else {
+            if history.isEmpty {
+                results = []
+                displayedQuery = ""
+                nextPageToken = nil
+                error = nil
+            }
+            return
+        }
+        results = committedResults
+        displayedQuery = committedQuery
+        nextPageToken = committedNextPageToken
+        isPreviewing = false
+        isLoading = false
+        error = nil
+    }
+
+    private func startSearch(query: String, isPreview: Bool) {
+        searchTask?.cancel()
+        let requestID = UUID()
+        activeRequestID = requestID
+        displayedQuery = query
+        isPreviewing = isPreview
+        results = []
+        nextPageToken = nil
+        error = nil
         isLoading = true
-        defer { isLoading = false }
+        let currentFilter = filter
+        searchTask = Task { [weak self] in
+            await self?.performSearch(
+                query: query,
+                filter: currentFilter,
+                isPreview: isPreview,
+                requestID: requestID
+            )
+        }
+    }
+
+    private func performSearch(
+        query: String,
+        continuationToken: String? = nil,
+        filter: SearchFilter = .default,
+        isPreview: Bool,
+        requestID: UUID
+    ) async {
+        isLoading = true
+        defer {
+            if activeRequestID == requestID {
+                isLoading = false
+            }
+        }
         do {
             let group = try await retryWithBackoff(label: "SearchVM") {
                 try await api.search(query: query, continuationToken: continuationToken, filter: filter)
             }
+            guard !Task.isCancelled, activeRequestID == requestID else { return }
             if continuationToken == nil {
                 results = group.videos
             } else {
                 results.append(contentsOf: group.videos)
             }
             nextPageToken = group.nextPageToken
-        } catch {
-            if !Task.isCancelled { self.error = error }
-        }
-    }
-
-    private func fetchSuggestions(for query: String) {
-        print("[Suggestions] fetchSuggestions spawning task for q='\(query)'")
-        suggestTask?.cancel()
-        suggestTask = Task {
-            do {
-                let s = try await api.fetchSearchSuggestions(query: query)
-                guard !Task.isCancelled else {
-                    print("[Suggestions] Task cancelled after fetch")
-                    return
+            displayedQuery = query
+            self.isPreviewing = isPreview
+            if !isPreview {
+                committedQuery = query
+                committedResults = results
+                committedNextPageToken = nextPageToken
+                if continuationToken == nil {
+                    let previewIDs = results
+                        .filter { !$0.isShort }
+                        .prefix(3)
+                        .map(\.id)
+                    if !previewIDs.isEmpty {
+                        await historyStore.updatePreview(for: query, videoIDs: previewIDs)
+                        history = await historyStore.all
+                    }
                 }
-                let result = s.isEmpty ? Self.recommendedTerms : s
-                print("[Suggestions] Setting \(result.count) suggestions")
-                suggestions = result
-            } catch {
-                print("[Suggestions] fetchSearchSuggestions threw: \(error)")
-                if !Task.isCancelled { suggestions = Self.recommendedTerms }
+            }
+        } catch {
+            if !Task.isCancelled, activeRequestID == requestID {
+                self.error = error
             }
         }
     }
@@ -157,16 +242,19 @@ public final class SearchViewModel {
     // MARK: - Feed hide handling
 
     private func observeFeedHideNotifications() {
-        hideObserverTasks.append(Task { [weak self] in
-            for await note in NotificationCenter.default.notifications(named: .hideVideoFromFeed) {
-                guard let self, let videoId = note.userInfo?["videoId"] as? String else { continue }
-                self.results.removeAll { $0.id == videoId }
+        let center = NotificationCenter.default
+        hideObserverTokens.append(center.addObserver(forName: .hideVideoFromFeed, object: nil, queue: .main) { [weak self] note in
+            guard let videoId = note.userInfo?["videoId"] as? String else { return }
+            Task { @MainActor [weak self] in
+                self?.results.removeAll { $0.id == videoId }
+                self?.committedResults.removeAll { $0.id == videoId }
             }
         })
-        hideObserverTasks.append(Task { [weak self] in
-            for await note in NotificationCenter.default.notifications(named: .hideChannelFromFeed) {
-                guard let self, let channelId = note.userInfo?["channelId"] as? String else { continue }
-                self.results.removeAll { $0.channelId == channelId }
+        hideObserverTokens.append(center.addObserver(forName: .hideChannelFromFeed, object: nil, queue: .main) { [weak self] note in
+            guard let channelId = note.userInfo?["channelId"] as? String else { return }
+            Task { @MainActor [weak self] in
+                self?.results.removeAll { $0.channelId == channelId }
+                self?.committedResults.removeAll { $0.channelId == channelId }
             }
         })
     }
@@ -183,16 +271,29 @@ public final class ChannelViewModel {
     public private(set) var isLoading: Bool = false
     public var error: Error?
 
-    private let api: any InnerTubeAPIProtocol
+    private var api: any InnerTubeAPIProtocol
     private var nextPageToken: String?
-    private var hideObserverTasks: [Task<Void, Never>] = []
+    private var hideObserverTokens: [NSObjectProtocol] = []
 
     public init(api: any InnerTubeAPIProtocol = InnerTubeAPI()) {
         self.api = api
         observeFeedHideNotifications()
     }
 
+    isolated deinit {
+        for token in hideObserverTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
     public func load(channelId: String) {
+        Task { await loadAsync(channelId: channelId) }
+    }
+
+    /// Reuses the app-scoped API for channel pages so authenticated channel
+    /// metadata is fetched for the same YouTube identity as the active tabs.
+    public func load(channelId: String, api: any InnerTubeAPIProtocol) {
+        self.api = api
         Task { await loadAsync(channelId: channelId) }
     }
 
@@ -229,17 +330,14 @@ public final class ChannelViewModel {
     // MARK: - Feed hide handling
 
     private func observeFeedHideNotifications() {
-        hideObserverTasks.append(Task { [weak self] in
-            for await note in NotificationCenter.default.notifications(named: .hideVideoFromFeed) {
-                guard let self, let videoId = note.userInfo?["videoId"] as? String else { continue }
-                self.videos.removeAll { $0.id == videoId }
-            }
+        let center = NotificationCenter.default
+        hideObserverTokens.append(center.addObserver(forName: .hideVideoFromFeed, object: nil, queue: .main) { [weak self] note in
+            guard let videoId = note.userInfo?["videoId"] as? String else { return }
+            Task { @MainActor [weak self] in self?.videos.removeAll { $0.id == videoId } }
         })
-        hideObserverTasks.append(Task { [weak self] in
-            for await note in NotificationCenter.default.notifications(named: .hideChannelFromFeed) {
-                guard let self, let channelId = note.userInfo?["channelId"] as? String else { continue }
-                self.videos.removeAll { $0.channelId == channelId }
-            }
+        hideObserverTokens.append(center.addObserver(forName: .hideChannelFromFeed, object: nil, queue: .main) { [weak self] note in
+            guard let channelId = note.userInfo?["channelId"] as? String else { return }
+            Task { @MainActor [weak self] in self?.videos.removeAll { $0.channelId == channelId } }
         })
     }
 }

@@ -152,7 +152,8 @@ private final class RSSParserDelegate: NSObject, XMLParserDelegate, @unchecked S
                     channelId: channelId,
                     thumbnailURL: currentThumbnailURL,
                     viewCount: currentViewCount,
-                    publishedAt: currentPublished
+                    publishedAt: currentPublished,
+                    exactPublishedAt: currentPublished
                 )
                 videos.append(video)
             }

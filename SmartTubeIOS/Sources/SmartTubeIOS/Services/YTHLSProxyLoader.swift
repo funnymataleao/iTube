@@ -112,7 +112,7 @@ final class YTHLSProxyLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecke
                 proxyLog.notice("[HLSProxy] attaching \(cookies.count) cookies (\(gvCount) googlevideo) to segment request")
             }
         }
-        proxyLog.notice("[HLSProxy] GET \(realURL.absoluteString.prefix(200))")
+        proxyLog.notice("[HLSProxy] GET \(realURL.lastPathComponent, privacy: .private(mask: .hash))")
 
         let key = ObjectIdentifier(loadingRequest)
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
@@ -135,10 +135,8 @@ final class YTHLSProxyLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecke
             }
 
             proxyLog.notice("[HLSProxy] \(realURL.lastPathComponent) HTTP=\(httpResp.statusCode) bytes=\(data.count)")
-            // Log response body for 4xx/5xx to diagnose CDN rejections (n-challenge, auth, etc.)
             if httpResp.statusCode >= 400 {
-                let errBody = String(data: data.prefix(300), encoding: .utf8) ?? "<binary>"
-                proxyLog.error("[HLSProxy] ERROR body: \(errBody as NSString)")
+                proxyLog.error("[HLSProxy] error response HTTP=\(httpResp.statusCode) bytes=\(data.count)")
             }
 
             // Determine whether this resource is an HLS playlist.
@@ -320,10 +318,6 @@ final class YTHLSProxyLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecke
         // additionally injects pot= into every segment URL within those variant playlists.
         if isMasterManifest {
             let lines = text.components(separatedBy: "\n")
-            // Diagnostic: log first #EXT-X-MEDIA:TYPE=AUDIO line to verify URI quote format.
-            if let sample = lines.first(where: { $0.hasPrefix("#EXT-X-MEDIA:") && $0.contains("TYPE=AUDIO") }) {
-                proxyLog.notice("[HLSProxy] first AUDIO EXT-X-MEDIA sample: \(sample.prefix(300))")
-            }
             var audioGroupCount = 0
             var variantCount = 0
             let rewrittenLines: [String] = lines.map { line in

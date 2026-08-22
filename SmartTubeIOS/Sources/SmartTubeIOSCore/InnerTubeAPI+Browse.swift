@@ -5,6 +5,13 @@ import FoundationNetworking
 #endif
 
 private let tubeLog = Logger(subsystem: appSubsystem, category: "InnerTube")
+private let guestTVContinuationPrefix = "guest-tv:"
+
+private struct GuestTopicDestination: Sendable {
+    let index: Int
+    let title: String
+    let browseID: String
+}
 
 // MARK: - Browse endpoints
 
@@ -23,12 +30,35 @@ extension InnerTubeAPI {
 
     // MARK: - Home
 
+    /// Applies the viewer's device language and region to anonymous discovery
+    /// requests, matching the public YouTube surface more closely than the
+    /// authenticated client's fixed fallback locale.
+    private var localizedGuestClientContext: [String: Any] {
+        var context = tvClientContext
+        var client = (context["client"] as? [String: Any]) ?? [:]
+        let locale = Locale.autoupdatingCurrent
+        client["hl"] = locale.language.languageCode?.identifier ?? "en"
+        client["gl"] = locale.region?.identifier ?? "US"
+        context["client"] = client
+        return context
+    }
+
+    private var localizedGuestWebClientContext: [String: Any] {
+        var context = webClientContext
+        var client = (context["client"] as? [String: Any]) ?? [:]
+        let locale = Locale.autoupdatingCurrent
+        client["hl"] = locale.language.languageCode?.identifier ?? "en"
+        client["gl"] = locale.region?.identifier ?? "US"
+        context["client"] = client
+        return context
+    }
+
     /// Fetches the home feed.
     /// When authenticated, uses TVHTML5 on youtubei.googleapis.com for a personalised feed.
     /// When unauthenticated, uses the WEB client on www.youtube.com for the default feed.
     public func fetchHome(continuationToken: String? = nil) async throws -> VideoGroup {
         let isAuth = authToken != nil
-        var body = makeBody(client: isAuth ? tvClientContext : webClientContext,
+        var body = makeBody(client: isAuth ? tvClientContext : localizedGuestWebClientContext,
                             continuationToken: continuationToken,
                             includeVisitorData: true)
         if continuationToken == nil {
@@ -46,7 +76,8 @@ extension InnerTubeAPI {
     /// Falls back to a single flat VideoGroup if no shelves are found.
     public func fetchHomeRows(continuationToken: String? = nil) async throws -> [VideoGroup] {
         let isAuth = authToken != nil
-        var body = makeBody(client: isAuth ? tvClientContext : webClientContext,
+        print("📊 fetchHomeRows: authToken=\(authToken != nil ? "present" : "nil") client=\(isAuth ? "TVHTML5" : "WEB")")
+        var body = makeBody(client: isAuth ? tvClientContext : localizedGuestWebClientContext,
                             continuationToken: continuationToken,
                             includeVisitorData: true)
         if continuationToken == nil {
@@ -64,6 +95,201 @@ extension InnerTubeAPI {
         }.joined(separator: ", ")
         tubeLog.notice("fetchHomeRows shelf detail: [\(rowShortsDetail, privacy: .public)]")
         return rows
+    }
+
+    /// Builds the signed-out Home from the public topic destinations exposed by
+    /// YouTube TV's own guide. Topic and shelf order/titles remain server-owned.
+    public func fetchGuestHomeRows() async throws -> [VideoGroup] {
+        let client = localizedGuestClientContext
+        let destinations: [GuestTopicDestination]
+        do {
+            let guideBody = makeBody(client: client, includeVisitorData: true)
+            let guideData = try await postTVCategory(endpoint: "guide", body: guideBody)
+            updateVisitorData(from: guideData)
+            let parsed = parseGuestTopicDestinations(from: guideData)
+            if parsed.isEmpty {
+                tubeLog.notice("fetchGuestHomeRows: guide contained no FEtopics_* destinations; using known public topic IDs")
+                destinations = fallbackGuestTopicDestinations
+            } else {
+                destinations = parsed
+            }
+        } catch {
+            // The guide schema is not required for availability. These IDs are
+            // YouTube-owned public destinations and their shelf titles still come
+            // from each live response.
+            tubeLog.notice("fetchGuestHomeRows guide failed; using known public topic IDs: \(error, privacy: .public)")
+            destinations = fallbackGuestTopicDestinations
+        }
+
+        let result = await withTaskGroup(of: (Int, [VideoGroup], Bool).self) { group in
+            for destination in destinations {
+                group.addTask { [self] in
+                    do {
+                        let rows = try await fetchGuestTopicRows(destination)
+                        return (destination.index, rows, true)
+                    } catch {
+                        tubeLog.notice("Guest topic \(destination.browseID, privacy: .public) failed: \(error, privacy: .public)")
+                        return (destination.index, [], false)
+                    }
+                }
+            }
+
+            var pages: [(Int, [VideoGroup], Bool)] = []
+            for await page in group where !Task.isCancelled {
+                pages.append(page)
+            }
+            let orderedPages = pages.sorted { $0.0 < $1.0 }
+            let rows = orderedPages.flatMap(\.1)
+            return (
+                rows: rows,
+                hadUsableResponse: orderedPages.contains { page in
+                    page.2 && page.1.contains { !$0.videos.isEmpty }
+                }
+            )
+        }
+
+        guard result.hadUsableResponse else {
+            throw APIError.unavailable("Public videos are temporarily unavailable. Please try again.")
+        }
+        return result.rows
+    }
+
+    private var fallbackGuestTopicDestinations: [GuestTopicDestination] {
+        [
+            ("Music", "FEtopics_music"),
+            ("Movies", "FEtopics_movies"),
+            ("Live", "FEtopics_live"),
+            ("Gaming", "FEtopics_gaming"),
+            ("News", "FEtopics_news"),
+            ("Sports", "FEtopics_sports"),
+            ("Podcasts", "FEtopics_podcasts"),
+        ].enumerated().map { index, item in
+            GuestTopicDestination(index: index, title: item.0, browseID: item.1)
+        }
+    }
+
+    private func parseGuestTopicDestinations(from guide: [String: Any]) -> [GuestTopicDestination] {
+        guard let sections = guide["items"] as? [[String: Any]] else { return [] }
+        var result: [GuestTopicDestination] = []
+        var seen = Set<String>()
+
+        for section in sections {
+            guard let renderer = section["guideSectionRenderer"] as? [String: Any],
+                  let items = renderer["items"] as? [[String: Any]]
+            else { continue }
+
+            for item in items {
+                guard let entry = item["guideEntryRenderer"] as? [String: Any],
+                      let endpoint = entry["navigationEndpoint"] as? [String: Any],
+                      let browse = endpoint["browseEndpoint"] as? [String: Any],
+                      let browseID = browse["browseId"] as? String,
+                      browseID.hasPrefix("FEtopics_"),
+                      !browseID.localizedCaseInsensitiveContains("shorts"),
+                      seen.insert(browseID).inserted
+                else { continue }
+
+                let title = (entry["formattedTitle"] as? [String: Any]).flatMap(extractText)
+                    ?? (entry["title"] as? [String: Any]).flatMap(extractText)
+                    ?? ""
+                result.append(GuestTopicDestination(
+                    index: result.count,
+                    title: title,
+                    browseID: browseID
+                ))
+            }
+        }
+        return result
+    }
+
+    private func fetchGuestTopicRows(
+        _ destination: GuestTopicDestination
+    ) async throws -> [VideoGroup] {
+        let client = localizedGuestClientContext
+        var body = makeBody(client: client, includeVisitorData: true)
+        body["browseId"] = destination.browseID
+        let data = try await postTVCategory(endpoint: "browse", body: body)
+        updateVisitorData(from: data)
+        let rows = parseVideoGroupRows(from: data)
+
+        // A topic response can contain several editorial sub-shelves, including a
+        // locale-specific generic "Recommended" label. Guest Home intentionally
+        // exposes one semantically named shelf per public FEtopics_* destination.
+        // This keeps the surface topic-based in every locale without trying to
+        // maintain an open-ended translation blacklist.
+        guard var row = rows.first(where: { candidate in
+            candidate.videos.contains { !$0.isShort }
+        }) else { return [] }
+
+        row.title = destination.title.isEmpty
+            ? fallbackGuestTopicTitle(for: destination.browseID)
+            : destination.title
+        // The current Home model has one global vertical continuation, while every
+        // topic owns a different one. Keep the selected shelf's independent
+        // horizontal continuation and stop the topic at its first page.
+        row.nextPageToken = nil
+        row.rowContinuationToken = tagGuestTVContinuation(row.rowContinuationToken)
+        return [row]
+    }
+
+    private func fallbackGuestTopicTitle(for browseID: String) -> String {
+        browseID
+            .replacingOccurrences(of: "FEtopics_", with: "")
+            .replacingOccurrences(of: "_", with: " ")
+            .localizedCapitalized
+    }
+
+    private func tagGuestTVContinuation(_ token: String?) -> String? {
+        guard let token, !token.isEmpty else { return nil }
+        return token.hasPrefix(guestTVContinuationPrefix)
+            ? token
+            : guestTVContinuationPrefix + token
+    }
+
+    private func untagGuestTVContinuation(_ token: String) -> String? {
+        guard token.hasPrefix(guestTVContinuationPrefix) else { return nil }
+        return String(token.dropFirst(guestTVContinuationPrefix.count))
+    }
+
+    /// Fetches the next page for one horizontal Home shelf. TVHTML5 returns
+    /// these as `horizontalListContinuation`, independently from the vertical
+    /// `sectionListContinuation` used by `fetchHomeRows`.
+    public func fetchHomeShelf(continuationToken: String) async throws -> VideoGroup {
+        let isAuth = authToken != nil
+        let guestTVToken = untagGuestTVContinuation(continuationToken)
+        let rawToken = guestTVToken ?? continuationToken
+        // The continuation's issuing client takes precedence over a later auth
+        // transition. A guest topic token remains a public TV token even if the
+        // viewer signs in while its request is in flight.
+        var client = guestTVToken != nil
+            ? localizedGuestClientContext
+            : (isAuth ? tvClientContext : localizedGuestWebClientContext)
+        if guestTVToken != nil, let visitorData {
+            // TVHTML5 category continuations bind visitorData to context.client;
+            // the generic top-level field is ignored and returns an empty page.
+            var clientFields = (client["client"] as? [String: Any]) ?? [:]
+            clientFields["visitorData"] = visitorData
+            client["client"] = clientFields
+        }
+        let body = makeBody(client: client,
+                            continuationToken: rawToken,
+                            includeVisitorData: true)
+        // Continuation tokens are bound to the client that issued them. Public
+        // FEwhat_to_watch rows come from WEB; public topic and personalized
+        // shelves come from TVHTML5 through different authenticated transports.
+        let data: [String: Any]
+        if guestTVToken != nil {
+            data = try await postTVCategory(endpoint: "browse", body: body)
+        } else if isAuth {
+            data = try await postTV(endpoint: "browse", body: body)
+        } else {
+            data = try await post(endpoint: "browse", body: body)
+        }
+        updateVisitorData(from: data)
+        var group = try parseVideoGroup(from: data, title: nil)
+        if guestTVToken != nil {
+            group.nextPageToken = tagGuestTVContinuation(group.nextPageToken)
+        }
+        return group
     }
 
     // MARK: - Subscriptions
@@ -134,16 +360,6 @@ extension InnerTubeAPI {
             }
         }
         let data = try await post(endpoint: "search", body: body)
-        // DEBUG: dump raw search response for #shorts queries so we can inspect
-        // which renderer types YouTube is actually returning.
-        if query == "#shorts", let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first {
-            let filename = continuationToken == nil ? "shorts_search_p1.json" : "shorts_search_cont_\(Int.random(in: 1000...9999)).json"
-            let url = desktop.appendingPathComponent(filename)
-            if let jsonData = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) {
-                try? jsonData.write(to: url)
-                tubeLog.notice("search DEBUG: dumped #shorts response (\(jsonData.count, privacy: .public) bytes) to Desktop/\(filename, privacy: .public)")
-            }
-        }
         return try parseVideoGroup(from: data, title: "Search: \(query)")
     }
 
@@ -158,7 +374,9 @@ extension InnerTubeAPI {
             URLQueryItem(name: "callback", value: ""),
         ]
         guard let url = components.url else { return [] }
-        print("[Suggestions] Fetching URL: \(url)")
+        #if DEBUG
+        print("[Suggestions] Fetching suggestions")
+        #endif
         let (data, response) = try await session.data(from: url)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
         print("[Suggestions] HTTP status: \(statusCode), bytes: \(data.count)")
@@ -167,7 +385,6 @@ extension InnerTubeAPI {
             print("[Suggestions] Failed to decode response as UTF-8")
             return []
         }
-        print("[Suggestions] Raw prefix: \(raw.prefix(120))")
         // Extract the outermost JSON array — works regardless of callback wrapper name
         guard let arrayStart = raw.firstIndex(of: "["),
               let arrayEnd = raw.lastIndex(of: "]") else {
@@ -175,7 +392,6 @@ extension InnerTubeAPI {
             return []
         }
         let jsonString = String(raw[arrayStart...arrayEnd])
-        print("[Suggestions] JSON prefix after strip: \(jsonString.prefix(120))")
         guard let jsonData = jsonString.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [Any]
         else {
@@ -218,10 +434,7 @@ extension InnerTubeAPI {
         var shorts = searchGroup.videos.filter { $0.isShort || ($0.duration.map { $0 <= 180 } ?? false) }
         for i in shorts.indices where !shorts[i].isShort { shorts[i].isShort = true }
         let dropped = searchGroup.videos.filter { !($0.isShort || ($0.duration.map { $0 <= 180 } ?? false)) }
-        for v in dropped {
-            tubeLog.notice("fetchShorts DROPPED: id=\(v.id, privacy: .public) dur=\(v.duration.map { "\($0)" } ?? "nil", privacy: .public) isShort=\(v.isShort, privacy: .public) title=\(v.title.prefix(40), privacy: .public)")
-        }
-        tubeLog.notice("fetchShorts search → \(searchGroup.videos.count, privacy: .public) total, \(shorts.count, privacy: .public) kept as shorts (\(dropped.count, privacy: .public) dropped), token=\(searchGroup.nextPageToken.map { String($0.prefix(16)) + "\u{2026}" } ?? "nil", privacy: .public)")
+        tubeLog.notice("fetchShorts search → \(searchGroup.videos.count, privacy: .public) total, \(shorts.count, privacy: .public) kept as shorts (\(dropped.count, privacy: .public) dropped), hasMore=\(searchGroup.nextPageToken != nil, privacy: .public)")
         // Tag token with "srch:" so fetchShortsMore() uses only the search continuation path.
         return VideoGroup(title: "Shorts", videos: shorts, nextPageToken: searchGroup.nextPageToken.map { "srch:" + $0 })
     }
@@ -247,7 +460,7 @@ extension InnerTubeAPI {
             }
             return ("", continuationToken)
         }()
-        tubeLog.notice("fetchShortsMore source=\(source.isEmpty ? "legacy" : source, privacy: .public) token=\(rawToken.prefix(16), privacy: .public)…")
+        tubeLog.notice("fetchShortsMore source=\(source.isEmpty ? "legacy" : source, privacy: .public) continuation=present")
         let isAuth = authToken != nil
 
         switch source {
@@ -280,9 +493,6 @@ extension InnerTubeAPI {
             var shorts = group.videos.filter { $0.isShort || ($0.duration.map { $0 <= 180 } ?? false) }
             for i in shorts.indices where !shorts[i].isShort { shorts[i].isShort = true }
             let dropped = group.videos.filter { !($0.isShort || ($0.duration.map { $0 <= 180 } ?? false)) }
-            for v in dropped {
-                tubeLog.notice("fetchShortsMore DROPPED: id=\(v.id, privacy: .public) dur=\(v.duration.map { "\($0)" } ?? "nil", privacy: .public) isShort=\(v.isShort, privacy: .public) title=\(v.title.prefix(40), privacy: .public)")
-            }
             tubeLog.notice("fetchShortsMore search → \(group.videos.count, privacy: .public) total, \(shorts.count, privacy: .public) kept (\(dropped.count, privacy: .public) dropped), nextToken=\(group.nextPageToken != nil ? "yes" : "no", privacy: .public)")
             return VideoGroup(title: "Shorts", videos: shorts, nextPageToken: group.nextPageToken.map { "srch:" + $0 })
 
@@ -294,8 +504,7 @@ extension InnerTubeAPI {
                     let data = try await postTV(endpoint: "browse", body: body)
                     let group = try parseVideoGroup(from: data, title: "Shorts")
                     let shorts = group.videos.filter { $0.isShort }
-                    let token = group.nextPageToken.map { String($0.prefix(16)) + "…" } ?? "nil"
-                    tubeLog.notice("fetchShortsMore postTV → \(group.videos.count, privacy: .public) videos, \(shorts.count, privacy: .public) shorts, token=\(token, privacy: .public)")
+                    tubeLog.notice("fetchShortsMore postTV → \(group.videos.count, privacy: .public) videos, \(shorts.count, privacy: .public) shorts, hasMore=\(group.nextPageToken != nil, privacy: .public)")
                     if !group.videos.isEmpty {
                         return VideoGroup(title: "Shorts", videos: shorts, nextPageToken: group.nextPageToken)
                     }
@@ -309,8 +518,7 @@ extension InnerTubeAPI {
                 let data = try await postTVCategory(endpoint: "browse", body: body)
                 let group = try parseVideoGroup(from: data, title: "Shorts")
                 let shorts = group.videos.filter { $0.isShort }
-                let token = group.nextPageToken.map { String($0.prefix(16)) + "…" } ?? "nil"
-                tubeLog.notice("fetchShortsMore postTVCategory → \(group.videos.count, privacy: .public) videos, \(shorts.count, privacy: .public) shorts, token=\(token, privacy: .public)")
+                tubeLog.notice("fetchShortsMore postTVCategory → \(group.videos.count, privacy: .public) videos, \(shorts.count, privacy: .public) shorts, hasMore=\(group.nextPageToken != nil, privacy: .public)")
                 if !group.videos.isEmpty {
                     return VideoGroup(title: "Shorts", videos: shorts, nextPageToken: group.nextPageToken)
                 }
@@ -323,8 +531,7 @@ extension InnerTubeAPI {
                 let data = try await post(endpoint: "browse", body: body)
                 let group = try parseVideoGroup(from: data, title: "Shorts")
                 let shorts = group.videos.filter { $0.isShort }
-                let token = group.nextPageToken.map { String($0.prefix(16)) + "\u{2026}" } ?? "nil"
-                tubeLog.notice("fetchShortsMore WEB → \(group.videos.count, privacy: .public) videos, \(shorts.count, privacy: .public) shorts, token=\(token, privacy: .public)")
+                tubeLog.notice("fetchShortsMore WEB → \(group.videos.count, privacy: .public) videos, \(shorts.count, privacy: .public) shorts, hasMore=\(group.nextPageToken != nil, privacy: .public)")
                 if !group.videos.isEmpty {
                     return VideoGroup(title: "Shorts", videos: shorts, nextPageToken: group.nextPageToken)
                 }
@@ -335,8 +542,7 @@ extension InnerTubeAPI {
             // Last resort: search continuation token.
             let searchGroup = try await search(query: "#shorts", continuationToken: rawToken)
             let searchShorts = searchGroup.videos.filter { $0.isShort }
-            let searchToken = searchGroup.nextPageToken.map { String($0.prefix(16)) + "\u{2026}" } ?? "nil"
-            tubeLog.notice("fetchShortsMore search → \(searchGroup.videos.count, privacy: .public) total, \(searchShorts.count, privacy: .public) shorts, token=\(searchToken, privacy: .public)")
+            tubeLog.notice("fetchShortsMore search → \(searchGroup.videos.count, privacy: .public) total, \(searchShorts.count, privacy: .public) shorts, hasMore=\(searchGroup.nextPageToken != nil, privacy: .public)")
             return VideoGroup(title: "Shorts", videos: searchShorts, nextPageToken: searchGroup.nextPageToken)
         }
     }

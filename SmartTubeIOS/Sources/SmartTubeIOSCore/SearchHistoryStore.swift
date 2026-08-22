@@ -47,10 +47,51 @@ public actor SearchHistoryStore: UserDefaultsBackedStore {
     public func add(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
+        let existingPreview = entries.first {
+            $0.query.caseInsensitiveCompare(trimmed) == .orderedSame
+        }?.previewVideoIDs
         entries.removeAll { $0.query.lowercased() == trimmed.lowercased() }
-        entries.insert(SearchHistoryEntry(query: trimmed), at: 0)
+        entries.insert(
+            SearchHistoryEntry(query: trimmed, previewVideoIDs: existingPreview),
+            at: 0
+        )
         if entries.count > Self.maxEntries {
             entries = Array(entries.prefix(Self.maxEntries))
+        }
+        persist()
+    }
+
+    /// Adds artwork references to an existing query without changing its order
+    /// or timestamp. Only opaque YouTube video IDs are persisted; images remain
+    /// in the system URL cache and are fetched from YouTube's image CDN as needed.
+    public func updatePreview(for query: String, videoIDs: [String]) {
+        guard !videoIDs.isEmpty else { return }
+        let uniqueIDs = videoIDs.reduce(into: [String]()) { result, id in
+            guard !id.isEmpty, !result.contains(id) else { return }
+            result.append(id)
+        }
+        guard !uniqueIDs.isEmpty else { return }
+
+        let previews = Array(uniqueIDs.prefix(3))
+        if let index = entries.firstIndex(where: {
+            $0.query.caseInsensitiveCompare(query) == .orderedSame
+        }) {
+            let entry = entries[index]
+            entries[index] = SearchHistoryEntry(
+                query: entry.query,
+                timestamp: entry.timestamp,
+                previewVideoIDs: previews
+            )
+        } else {
+            let trimmed = query.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return }
+            entries.insert(
+                SearchHistoryEntry(query: trimmed, previewVideoIDs: previews),
+                at: 0
+            )
+            if entries.count > Self.maxEntries {
+                entries = Array(entries.prefix(Self.maxEntries))
+            }
         }
         persist()
     }

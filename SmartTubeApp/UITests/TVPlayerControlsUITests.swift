@@ -12,8 +12,8 @@ import XCTest
 // Player controls (playPauseButton, nextBtn) are rendered in the ZStack below the more
 // menu and remain in the accessibility tree even while the menu is visible.
 //
-// Run against the "Smart Tube" tvOS scheme:
-//   xcodebuild test -workspace SmartTube.xcworkspace -scheme "Smart Tube"
+// Run against the iTube tvOS scheme:
+//   xcodebuild test -workspace SmartTube.xcworkspace -scheme iTube
 //     -destination "id=30E83929-0C67-4572-82C4-FE0F228EA835"
 //     -only-testing:SmartTubeTVUITests/TVPlayerControlsUITests
 

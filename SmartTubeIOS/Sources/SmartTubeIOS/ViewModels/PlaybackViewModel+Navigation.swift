@@ -15,8 +15,8 @@ extension PlaybackViewModel {
     /// Uses `.immediate` priority so it jumps ahead of speculative card prefetches.
     /// Safe to call multiple times for the same video — the cache deduplicates.
     func prefetchQueueVideo(at index: Int) {
-        let sponsorCats = settings.activeSponsorCategories
         let token = currentAuthToken
+        let sponsorCats = settings.activeSponsorCategories
         // Pre-warm BotGuardWebViewRunner for rqh=1 queue videos — fire once, no-ops when ready.
         #if canImport(WebKit)
         if !BotGuardWebViewRunner.shared.isReady {
@@ -64,9 +64,8 @@ extension PlaybackViewModel {
                     CrashlyticsLogger.setIntendedVideo(id: next.id, title: next.title)
                     load(video: next)
                 } else {
-                    playerLog.notice("playNext (queue): exhausted at index=\(idx), clearing")
-                    await CurrentQueueStore.shared.clear()
-                    playNextFromSuggestions()
+                    playerLog.notice("playNext (queue): exhausted at index=\(idx), keeping collection boundary")
+                    hasNext = false
                 }
             }
             return

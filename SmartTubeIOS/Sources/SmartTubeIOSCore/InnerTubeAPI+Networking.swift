@@ -29,6 +29,20 @@ func extractYouTubeVisitorData(from html: String) -> String? {
     return nil
 }
 
+/// Extracts the public InnerTube key emitted by the watch page that created the
+/// anonymous visitor session. The key is not a secret, but keeping it paired with
+/// the same page cookies and visitor ID avoids a mixed-session player request.
+func extractYouTubeAPIKey(from html: String) -> String? {
+    let pattern = #"\"INNERTUBE_API_KEY\"\s*:\s*\"([^\"]+)\""#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(
+              in: html, range: NSRange(html.startIndex..., in: html)
+          ),
+          let range = Range(match.range(at: 1), in: html) else { return nil }
+    let value = String(html[range])
+    return value.isEmpty ? nil : value
+}
+
 // MARK: - Networking
 
 extension InnerTubeAPI {
@@ -40,6 +54,34 @@ extension InnerTubeAPI {
     /// youtube.com cookies and exposes visitorData required to avoid false
     /// `LOGIN_REQUIRED` bot-detection responses on otherwise public videos.
     func seedVisionOSSession(videoId: String) async {
+        #if os(tvOS)
+        let diagnosticEnvironment = ProcessInfo.processInfo.environment
+        if let trustedVisitor = diagnosticEnvironment["PLAYBACK_TRUSTED_VISITOR"],
+           let trustedCookie = diagnosticEnvironment["PLAYBACK_TRUSTED_COOKIE"],
+           !trustedVisitor.isEmpty,
+           !trustedCookie.isEmpty {
+            visitorData = trustedVisitor
+            anonymousVisitorData = trustedVisitor
+            anonymousCookieHeader = trustedCookie
+            if diagnosticEnvironment["PLAYBACK_DIAGNOSTIC_VIDEO_ID"] != nil
+                || ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+                print("[InnerTube] Using externally seeded trusted anonymous session")
+            }
+            return
+        }
+        #endif
+
+        // A visitor session is not video-specific. Reuse it briefly so concurrent
+        // fallback clients cannot clear and replace the cookie jar while a VisionOS
+        // /player request is in flight. NWPath changes invalidate it immediately.
+        if anonymousVisitorData != nil,
+           anonymousCookieHeader != nil,
+           let seededAt = anonymousSessionSeededAt,
+           Date().timeIntervalSince(seededAt) < 10 * 60 {
+            anonymousWatchReferer = "https://www.youtube.com/watch?v=\(videoId)&bpctr=9999999999&has_verified=1"
+            return
+        }
+
         var components = URLComponents(string: "https://www.youtube.com/watch")!
         components.queryItems = [
             URLQueryItem(name: "v", value: videoId),
@@ -48,6 +90,10 @@ extension InnerTubeAPI {
         ]
         guard let url = components.url else { return }
 
+        let cookieStorage = anonymousPlayerSession.configuration.httpCookieStorage
+        for cookie in cookieStorage?.cookies ?? [] where cookie.domain.contains("youtube.com") {
+            cookieStorage?.deleteCookie(cookie)
+        }
         if let consentCookie = HTTPCookie(properties: [
             .domain: ".youtube.com",
             .path: "/",
@@ -56,24 +102,105 @@ extension InnerTubeAPI {
             .secure: true,
             .expires: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60),
         ]) {
-            HTTPCookieStorage.shared.setCookie(consentCookie)
+            cookieStorage?.setCookie(consentCookie)
         }
 
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
                                  timeoutInterval: 15)
-        request.setValue(InnerTubeClients.WebSafari.userAgent, forHTTPHeaderField: "User-Agent")
+        // Match the player fingerprint. The working relay uses the VisionOS Safari
+        // UA for both requests; switching UA after seeding produces LOGIN_REQUIRED.
+        request.setValue(InnerTubeClients.VisionOS.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-        guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              let html = String(data: data, encoding: .utf8) else { return }
+        request.setValue("SOCS=CAI", forHTTPHeaderField: "Cookie")
+
+        let data: Data
+        let responseCookies: [HTTPCookie]
+        #if os(tvOS)
+        guard let response = try? await StandaloneHTTPClient.data(for: request, timeout: 15),
+              (200..<300).contains(response.statusCode) else {
+            #if os(tvOS)
+            if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+                print("[InnerTube] VisionOS standalone watch-page seed failed")
+            }
+            #endif
+            return
+        }
+        data = response.body
+        responseCookies = response.values(forHTTPHeaderField: "Set-Cookie").flatMap { value in
+            HTTPCookie.cookies(
+                withResponseHeaderFields: ["Set-Cookie": value],
+                for: url
+            )
+        }
+        #else
+        guard let fetched = try? await anonymousPlayerSession.data(for: request),
+              let http = fetched.1 as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else { return }
+        data = fetched.0
+        let headerFields = http.allHeaderFields.reduce(into: [String: String]()) { result, entry in
+            guard let key = entry.key as? String else { return }
+            result[key] = String(describing: entry.value)
+        }
+        responseCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
+        #endif
+
+        guard let html = String(data: data, encoding: .utf8) else { return }
+        responseCookies.forEach { cookieStorage?.setCookie($0) }
+        let storedCookies = cookieStorage?.cookies(for: url) ?? []
+        var cookiesByName: [String: HTTPCookie] = [:]
+        for cookie in storedCookies + responseCookies {
+            cookiesByName[cookie.name] = cookie
+        }
+        if let consentCookie = HTTPCookie(properties: [
+            .domain: ".youtube.com",
+            .path: "/",
+            .name: "SOCS",
+            .value: "CAI",
+            .secure: true,
+        ]) {
+            cookiesByName[consentCookie.name] = consentCookie
+        }
+        anonymousCookieHeader = HTTPCookie.requestHeaderFields(
+            with: Array(cookiesByName.values)
+        )["Cookie"]
+        anonymousPlayerAPIKey = extractYouTubeAPIKey(from: html)
+        anonymousWatchReferer = url.absoluteString
 
         if let value = extractYouTubeVisitorData(from: html) {
             visitorData = value
+            anonymousVisitorData = value
+            anonymousSessionSeededAt = Date()
             tubeLog.notice("VisionOS session seeded (visitorData len=\(value.count, privacy: .public))")
+            #if os(tvOS)
+            if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+                print("[InnerTube] VisionOS anonymous session seeded visitor_len=\(value.count) cookies=\(cookiesByName.keys.sorted())")
+            }
+            #endif
             return
         }
         tubeLog.notice("VisionOS session watch page loaded without visitorData")
+    }
+
+    /// Headers that must accompany media URLs returned by the anonymous VisionOS
+    /// player session. AVFoundation does not reliably preserve these across HLS
+    /// redirects, so the tvOS target attaches them in its process-local relay.
+    public func visionOSPlaybackHeaders() -> [String: String] {
+        var headers = [
+            "User-Agent": InnerTubeClients.VisionOS.userAgent,
+            "Origin": "https://www.youtube.com",
+            "Referer": "https://www.youtube.com/",
+            // Match the browser-mode headers sent by the working Node relay.
+            // rqh=1 GVS URLs reject otherwise equivalent bare Network.framework
+            // requests on the physical Apple TV.
+            "Accept": "*/*",
+            "Accept-Language": "*",
+            "Sec-Fetch-Mode": "cors",
+            "Accept-Encoding": "identity",
+        ]
+        if let anonymousCookieHeader, !anonymousCookieHeader.isEmpty {
+            headers["Cookie"] = anonymousCookieHeader
+        }
+        return headers
     }
 
     // MARK: - signatureTimestamp fetch
@@ -338,7 +465,7 @@ extension InnerTubeAPI {
             throw APIError.invalidURL("player")
         }
         comps.queryItems = [
-            URLQueryItem(name: "key", value: apiKey),
+            URLQueryItem(name: "key", value: anonymousPlayerAPIKey ?? apiKey),
             URLQueryItem(name: "prettyPrint", value: "false"),
         ]
         guard let url = comps.url else { throw APIError.invalidURL("player") }
@@ -346,21 +473,45 @@ extension InnerTubeAPI {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("https://www.youtube.com", forHTTPHeaderField: "Origin")
+        if let anonymousWatchReferer {
+            request.setValue(anonymousWatchReferer, forHTTPHeaderField: "Referer")
+        }
         request.setValue(InnerTubeClients.VisionOS.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(InnerTubeClients.VisionOS.nameID, forHTTPHeaderField: "X-YouTube-Client-Name")
         request.setValue(InnerTubeClients.VisionOS.version, forHTTPHeaderField: "X-YouTube-Client-Version")
-        if let vd = visitorData {
+        if let vd = anonymousVisitorData {
             request.setValue(vd, forHTTPHeaderField: "X-Goog-Visitor-Id")
         }
+        if let cookieHeader = anonymousCookieHeader {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        let data: Data
+        let statusCode: Int
+        #if os(tvOS)
+        let response = try await StandaloneHTTPClient.data(for: request, timeout: 30)
+        data = response.body
+        statusCode = response.statusCode
+        #else
+        let response = try await anonymousPlayerSession.data(for: request)
+        data = response.0
+        statusCode = (response.1 as? HTTPURLResponse)?.statusCode ?? 0
+        #endif
+        guard (200..<300).contains(statusCode) else {
             throw APIError.httpError(statusCode)
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw APIError.decodingError("Root JSON is not a dictionary")
         }
+        #if os(tvOS)
+        if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+            let playability = json["playabilityStatus"] as? [String: Any]
+            let status = playability?["status"] as? String ?? "missing"
+            let reason = playability?["reason"] as? String ?? ""
+            let hasHLS = (json["streamingData"] as? [String: Any])?["hlsManifestUrl"] != nil
+            print("[InnerTube] VisionOS player status=\(status) hls=\(hasHLS) reason=\(reason)")
+        }
+        #endif
         return json
     }
 
@@ -637,14 +788,31 @@ extension InnerTubeAPI {
         // Use the override visitor ID (from WKWebView guide call) when provided, so the
         // X-Goog-Visitor-Id header matches the context.client.visitorData in the body and
         // the minted BotGuard pot= token identifier — required for CDN URL validation.
+        #if os(tvOS)
+        // Keep JS-less tvOS playback isolated from the account/session traffic in
+        // `session`. A shared jar that has seen failed OAuth-to-web merge attempts is
+        // frequently classified LOGIN_REQUIRED even for public videos. The anonymous
+        // watch-page seed owns a coherent visitor + cookie pair and is the closest
+        // equivalent to yt-dlp's fresh webpage session.
+        let effectiveVD = visitorIdOverride ?? anonymousVisitorData ?? visitorData
+        if sapisid == nil, let cookieHeader = anonymousCookieHeader {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        #else
         let effectiveVD = visitorIdOverride ?? visitorData
+        #endif
         if let vd = effectiveVD {
             request.setValue(vd, forHTTPHeaderField: "X-Goog-Visitor-Id")
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let videoId = body["videoId"] as? String ?? ""
         tubeLog.notice("POST /player [WebSafari] videoId=\(videoId, privacy: .public) auth=\(authStatus, privacy: .public)")
+        #if os(tvOS)
+        let webSafariSession = sapisid == nil ? anonymousPlayerSession : session
+        let (data, response) = try await webSafariSession.data(for: request)
+        #else
         let (data, response) = try await session.data(for: request)
+        #endif
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             tubeLog.error("❌ HTTP \(statusCode, privacy: .public) for /player [WebSafari]")
@@ -654,6 +822,15 @@ extension InnerTubeAPI {
             tubeLog.error("❌ Non-dictionary JSON root for /player [WebSafari]")
             throw APIError.decodingError("Root JSON is not a dictionary")
         }
+        #if os(tvOS)
+        if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+            let playability = json["playabilityStatus"] as? [String: Any]
+            let status = playability?["status"] as? String ?? "missing"
+            let reason = playability?["reason"] as? String ?? ""
+            let streaming = json["streamingData"] as? [String: Any]
+            print("[InnerTube] WebSafari isolated status=\(status) hls=\(streaming?["hlsManifestUrl"] != nil) sabr=\(streaming?["serverAbrStreamingUrl"] != nil) reason=\(reason)")
+        }
+        #endif
         if let error = json["error"] as? [String: Any] {
             tubeLog.error("❌ API error in /player [WebSafari]: \(String(describing: error["message"] ?? error), privacy: .public)")
         } else {
@@ -769,7 +946,9 @@ extension InnerTubeAPI {
         endpoint: String,
         body: [String: Any],
         useAuth: Bool = true,
-        explicitBearerToken: String? = nil
+        explicitBearerToken: String? = nil,
+        clientVersion: String = InnerTubeClients.TV.version,
+        userAgent: String? = nil
     ) async throws -> [String: Any] {
         guard var comps = URLComponents(url: playerBaseURL.appendingPathComponent(endpoint),
                                         resolvingAgainstBaseURL: false) else {
@@ -787,7 +966,10 @@ extension InnerTubeAPI {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(InnerTubeClients.TV.nameID, forHTTPHeaderField: "X-YouTube-Client-Name")
-        request.setValue(InnerTubeClients.TV.version, forHTTPHeaderField: "X-YouTube-Client-Version")
+        request.setValue(clientVersion, forHTTPHeaderField: "X-YouTube-Client-Version")
+        if let userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
         if let token = resolvedToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -809,6 +991,109 @@ extension InnerTubeAPI {
         } else {
             let topKeys = Array(json.keys.prefix(6))
             tubeLog.notice("✅ /\(endpoint, privacy: .public) [TV] HTTP \(statusCode, privacy: .public) keys: \(topKeys, privacy: .public)")
+        }
+        return json
+    }
+
+    func postAuthenticatedMutation(endpoint: String, body: [String: Any]) async throws -> [String: Any] {
+        do {
+            return try validatedMutationResponse(
+                await postTVOnYouTubeHost(endpoint: endpoint, body: body),
+                endpoint: endpoint
+            )
+        } catch let APIError.httpError(code)
+            where sapisid != nil && [400, 401, 403, 404].contains(code) {
+            tubeLog.notice("TV-www /\(endpoint, privacy: .public) HTTP \(code, privacy: .public) — retrying WEB SAPISIDHASH")
+            return try validatedMutationResponse(
+                await postWebMutation(endpoint: endpoint, body: body),
+                endpoint: endpoint
+            )
+        }
+    }
+
+    private func validatedMutationResponse(
+        _ json: [String: Any],
+        endpoint: String
+    ) throws -> [String: Any] {
+        guard let error = json["error"] as? [String: Any] else { return json }
+        let message = error["message"] as? String ?? "YouTube rejected the request"
+        let code = error["code"] as? Int ?? 0
+        tubeLog.error("❌ API mutation error in /\(endpoint, privacy: .public): \(message, privacy: .public)")
+        if code > 0 {
+            throw APIError.httpError(code)
+        }
+        throw APIError.unavailable(message)
+    }
+
+    private func postWebMutation(endpoint: String, body: [String: Any]) async throws -> [String: Any] {
+        guard var comps = URLComponents(url: baseURL.appendingPathComponent(endpoint), resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL(endpoint)
+        }
+        comps.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        guard let url = comps.url, let sid = sapisid else { throw APIError.invalidURL(endpoint) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("https://www.youtube.com", forHTTPHeaderField: "Origin")
+        request.setValue(InnerTubeClients.Web.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(InnerTubeClients.Web.nameID, forHTTPHeaderField: "X-YouTube-Client-Name")
+        request.setValue(InnerTubeClients.Web.version, forHTTPHeaderField: "X-YouTube-Client-Version")
+        request.setValue(InnerTubeAPI.sapisidhash(sapisid: sid), forHTTPHeaderField: "Authorization")
+        request.setValue("1", forHTTPHeaderField: "X-Origin")
+        var webBody = body
+        webBody["context"] = webClientContext
+        request.httpBody = try JSONSerialization.data(withJSONObject: webBody)
+        tubeLog.notice("POST /\(endpoint, privacy: .public) [WEB mutation] auth=SAPISIDHASH")
+        let (data, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            tubeLog.error("❌ HTTP \(statusCode, privacy: .public) for /\(endpoint, privacy: .public) [WEB mutation]")
+            throw APIError.httpError(statusCode)
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.decodingError("Root JSON is not a dictionary")
+        }
+        return json
+    }
+
+    private func postTVOnYouTubeHost(endpoint: String, body: [String: Any]) async throws -> [String: Any] {
+        guard let token = authToken else { throw APIError.notAuthenticated }
+        guard var comps = URLComponents(url: baseURL.appendingPathComponent(endpoint), resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL(endpoint)
+        }
+        comps.queryItems = [URLQueryItem(name: "prettyPrint", value: "false")]
+        guard let url = comps.url else { throw APIError.invalidURL(endpoint) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("gzip, deflate", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(InnerTubeClients.TV.actionUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("https://www.youtube.com/tv", forHTTPHeaderField: "Referer")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let accountPageId, !accountPageId.isEmpty {
+            request.setValue(accountPageId, forHTTPHeaderField: "X-Goog-PageId")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let pageIdState = accountPageId == nil ? "no" : "yes"
+        tubeLog.notice("POST /\(endpoint, privacy: .public) [TV action] auth=yes pageId=\(pageIdState, privacy: .public)")
+        let (data, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let responseSummary: String
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = json["error"] as? [String: Any] {
+                let code = error["code"] ?? statusCode
+                let message = String((error["message"] as? String ?? "").prefix(160))
+                let status = error["status"] ?? ""
+                responseSummary = "code=\(code) status=\(status) message=\(message)"
+            } else {
+                responseSummary = String(data: data.prefix(200), encoding: .utf8) ?? "(non-utf8 response)"
+            }
+            tubeLog.error("❌ HTTP \(statusCode, privacy: .public) for /\(endpoint, privacy: .public) [TV action] response=\(responseSummary, privacy: .public)")
+            throw APIError.httpError(statusCode)
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.decodingError("Root JSON is not a dictionary")
         }
         return json
     }

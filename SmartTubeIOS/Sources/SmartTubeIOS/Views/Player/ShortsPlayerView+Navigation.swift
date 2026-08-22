@@ -118,6 +118,7 @@ extension ShortsPlayerView {
         Task { @MainActor in
             let standby = ShortsEmbedPlayerViewModel(api: api)
             standby.updateSettings(store.settings)
+            standby.updateAuthToken(authService.accessToken)
             // Attach to the view hierarchy immediately (ShortsPlayerView hosts
             // standbyVM in a hidden ShortsTOSWebView) — an unattached WKWebView
             // never progresses past readyState 0 (WebKit throttles media loading
@@ -185,8 +186,10 @@ extension ShortsPlayerView {
         CrashlyticsLogger.setIntendedVideo(id: video.id, title: video.title)
         #if os(iOS)
         vm.updateSettings(store.settings)
+        vm.updateAuthToken(authService.accessToken)
         vm.loadShort(video: video)
         #else
+        vm.updateAuthToken(authService.accessToken)
         vm.load(video: video)
         vm.setPlaybackSpeed(store.settings.playbackSpeed)
         vm.updateSettings(store.settings)

@@ -12,9 +12,17 @@ public struct SearchHistoryEntry: Codable, Sendable, Identifiable, Equatable {
     public let query: String
     /// When this query was last submitted. Used for newest-first sorting.
     public let timestamp: Date
+    /// Video IDs from the first result page. Optional so history written by
+    /// earlier app versions keeps decoding without a migration.
+    public let previewVideoIDs: [String]?
 
-    public init(query: String, timestamp: Date = Date()) {
+    public init(
+        query: String,
+        timestamp: Date = Date(),
+        previewVideoIDs: [String]? = nil
+    ) {
         self.query = query
         self.timestamp = timestamp
+        self.previewVideoIDs = previewVideoIDs
     }
 }

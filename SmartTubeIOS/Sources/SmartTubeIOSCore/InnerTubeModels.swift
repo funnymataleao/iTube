@@ -24,7 +24,20 @@ public enum LikeStatus: Sendable, Codable {
 public struct NextInfo: Sendable, Codable {
     public let relatedVideos: [Video]
     public let likeStatus: LikeStatus
+    public let likeCountText: String?
     public let chapters: [Chapter]
+
+    public init(
+        relatedVideos: [Video],
+        likeStatus: LikeStatus,
+        likeCountText: String? = nil,
+        chapters: [Chapter]
+    ) {
+        self.relatedVideos = relatedVideos
+        self.likeStatus = likeStatus
+        self.likeCountText = likeCountText
+        self.chapters = chapters
+    }
 }
 
 // MARK: - Comment
@@ -38,6 +51,16 @@ public struct Comment: Sendable, Identifiable {
     public let likeCount: String
     public let publishedTime: String
     public let isLiked: Bool
+}
+
+public struct CommentsPage: Sendable {
+    public let comments: [Comment]
+    public let continuationToken: String?
+
+    public init(comments: [Comment], continuationToken: String?) {
+        self.comments = comments
+        self.continuationToken = continuationToken
+    }
 }
 
 // MARK: - EndCard
@@ -91,6 +114,9 @@ public struct PlayerInfo: Sendable {
     public let formats: [VideoFormat]
     public let hlsURL: URL?
     public let dashURL: URL?
+    /// YouTube's proprietary SABR/UMP endpoint. AVPlayer cannot consume this URL
+    /// directly; it is kept separate from standard per-format media URLs.
+    public let serverAbrURL: URL?
     public let captionTracks: [CaptionTrack]
     /// Tracking URLs for watch-history reporting; nil when unavailable (e.g. unauthenticated iOS client).
     public let trackingURLs: PlaybackTrackingURLs?
@@ -98,6 +124,26 @@ public struct PlayerInfo: Sendable {
     /// Empty when the iOS client is used for primary streaming — a fallback web-client
     /// fetch is performed in PlaybackViewModel when this is empty.
     public let endCards: [EndCard]
+
+    public init(
+        video: Video,
+        formats: [VideoFormat],
+        hlsURL: URL?,
+        dashURL: URL?,
+        serverAbrURL: URL? = nil,
+        captionTracks: [CaptionTrack],
+        trackingURLs: PlaybackTrackingURLs?,
+        endCards: [EndCard]
+    ) {
+        self.video = video
+        self.formats = formats
+        self.hlsURL = hlsURL
+        self.dashURL = dashURL
+        self.serverAbrURL = serverAbrURL
+        self.captionTracks = captionTracks
+        self.trackingURLs = trackingURLs
+        self.endCards = endCards
+    }
 
     /// The best stream URL to hand to AVPlayer.
     /// Prefers HLS (works natively in AVPlayer on iOS, handles adaptive quality).
@@ -151,21 +197,20 @@ public struct PlayerInfo: Sendable {
         return audioOnly.sorted { ($0.bitrate ?? 0) > ($1.bitrate ?? 0) }.first?.url
     }
 
-    /// Returns `true` when all adaptive video-only MP4 formats are SABR streams
-    /// (signed by TVHTML5, identified by `c=TVHTML5` in the URL).
-    /// SABR URLs serve binary UMP protocol data — `AVURLAsset.loadTracks` stalls 60 s
-    /// then returns `-11828 ("Cannot Open")`. When `true`, skip adaptive composition
-    /// and route directly to the WKWebView HLS path.
+    /// Returns `true` only for a SABR-only response: YouTube supplied its UMP
+    /// endpoint but omitted direct adaptive media URLs. `c=TVHTML5` is merely the
+    /// signing-client identifier and must not be used as a SABR discriminator.
     public var containsSabrFormats: Bool {
-        let adaptiveVideos = formats.filter {
+        guard serverAbrURL != nil else { return false }
+        let hasDirectAdaptiveVideo = formats.contains {
             $0.mimeType.hasPrefix("video/mp4") &&
             !$0.mimeType.contains(", ") &&
             $0.url != nil
         }
-        guard !adaptiveVideos.isEmpty else { return false }
-        return adaptiveVideos.allSatisfy {
-            $0.url?.absoluteString.contains("c=TVHTML5") == true
+        let hasDirectAdaptiveAudio = formats.contains {
+            $0.mimeType.hasPrefix("audio/") && $0.url != nil
         }
+        return !hasDirectAdaptiveVideo || !hasDirectAdaptiveAudio
     }
 
     /// Returns `true` when all adaptive video-only MP4 formats have `rqh=1` CDN enforcement
@@ -213,6 +258,7 @@ public struct PlayerInfo: Sendable {
             formats: patched,
             hlsURL: append(hlsURL),
             dashURL: append(dashURL),
+            serverAbrURL: serverAbrURL,
             captionTracks: captionTracks,
             trackingURLs: trackingURLs,
             endCards: endCards
@@ -237,6 +283,7 @@ public struct PlayerInfo: Sendable {
             formats: muxedFormats,
             hlsURL: nil,
             dashURL: nil,
+            serverAbrURL: serverAbrURL,
             captionTracks: captionTracks,
             trackingURLs: trackingURLs,
             endCards: endCards

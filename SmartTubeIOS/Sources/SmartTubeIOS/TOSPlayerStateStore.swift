@@ -27,6 +27,20 @@ private let tosStoreLog = Logger(subsystem: "com.void.smarttube.app", category: 
 @Observable
 public final class TOSPlayerStateStore {
 
+    // MARK: - Runtime context
+
+    /// Production dependencies used to configure every swipe-created view model
+    /// before it can start loading. They are optional so focused store tests can
+    /// continue constructing an isolated store with `init()`.
+    private let settingsStore: SettingsStore?
+    private let authService: AuthService?
+
+    /// Last values pushed by AppEntry. These also provide the context for stores
+    /// created without production dependencies (for example, tests/previews).
+    private var latestSettings: AppSettings
+    private var latestAuthToken: String?
+    private var latestSAPISID: String?
+
     // MARK: - Presentation state
 
     public enum Presentation: Equatable {
@@ -84,7 +98,16 @@ public final class TOSPlayerStateStore {
 
     // MARK: - Init
 
-    public init() {
+    public init(
+        settingsStore: SettingsStore? = nil,
+        authService: AuthService? = nil
+    ) {
+        self.settingsStore = settingsStore
+        self.authService = authService
+        self.latestSettings = settingsStore?.settings ?? AppSettings()
+        self.latestAuthToken = Self.normalized(authService?.accessToken)
+        self.latestSAPISID = Self.normalized(authService?.sapisid)
+
         // Test-only: listen for the "takesnapshot" Darwin notification so
         // XCUITest can ask the running app to capture the WKWebView's
         // rendered content and write it to a known file path. The test
@@ -98,6 +121,35 @@ public final class TOSPlayerStateStore {
         // `com.void.smarttube.tosplayer.snapshot.taken` (posted by
         // `TOSPlayerViewModel.takeSnapshot`), then reads the file.
         Self.installSnapshotListener()
+    }
+
+    /// Updates the fallback settings snapshot and the active TOS player. In the
+    /// production store, `play(video:api:)` reads directly from SettingsStore so
+    /// a VM created by a swipe always receives the newest persisted preferences.
+    public func updateSettings(_ settings: AppSettings) {
+        latestSettings = settings
+        vm?.updateSettings(settings)
+    }
+
+    /// Synchronously updates the account capability on the active TOS VM. The VM
+    /// clears SponsorBlock state immediately when `token` is nil; its actor-backed
+    /// API propagation continues asynchronously inside `updateAuthToken`.
+    public func updateAuthToken(_ token: String?) {
+        let effectiveToken = Self.normalized(token)
+        latestAuthToken = effectiveToken
+        vm?.updateAuthToken(effectiveToken)
+    }
+
+    /// Keeps both the active VM and the context for the next swipe-created VM in
+    /// sync with the current YouTube web-session cookie.
+    public func updateSAPISID(_ sapisid: String?) {
+        let effectiveSAPISID = Self.normalized(sapisid)
+        latestSAPISID = effectiveSAPISID
+        vm?.updateSAPISID(effectiveSAPISID)
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        value.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// One-time (per app launch) install of the Darwin notification observer
@@ -177,6 +229,17 @@ public final class TOSPlayerStateStore {
 
         seenVideoIds.insert(video.id)
         let newVM = TOSPlayerViewModel(videoId: video.id, title: video.title, channelId: video.channelId, channelTitle: video.channelTitle, thumbnailURL: video.thumbnailURL, playlistId: video.playlistId, playlistIndex: video.playlistIndex, startTime: 0, api: api)
+        // SwiftUI keeps TOSPlayerView alive while swipe navigation replaces its VM,
+        // so the view's onAppear does not run again. Apply the current runtime
+        // context here, before startIfNeeded(), for every newly-created VM.
+        newVM.updateSettings(settingsStore?.settings ?? latestSettings)
+        if let authService {
+            newVM.updateAuthToken(Self.normalized(authService.accessToken))
+            newVM.updateSAPISID(Self.normalized(authService.sapisid))
+        } else {
+            newVM.updateAuthToken(latestAuthToken)
+            newVM.updateSAPISID(latestSAPISID)
+        }
         newVM.seenVideoIds = seenVideoIds
         newVM.setNavigationContext(hasPrevious: !history.isEmpty)
         // Wire swipe-navigation callbacks here (not in TOSPlayerView.onAppear) so

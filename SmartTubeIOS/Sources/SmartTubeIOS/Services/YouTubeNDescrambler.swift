@@ -34,11 +34,11 @@ actor YouTubeNDescrambler {
             return replacing(n: scrambled, with: cached, in: url)
         }
         guard let descrambled = await computeDescrambledN(scrambled) else {
-            log.error("n-descramble failed — returning original URL (n=\(scrambled))")
+            log.error("n-descramble failed — returning original URL")
             return url
         }
         nCache[scrambled] = descrambled
-        log.notice("n-descramble OK: \(scrambled) → \(descrambled)")
+        log.notice("n-descramble succeeded")
         return replacing(n: scrambled, with: descrambled, in: url)
     }
 
@@ -389,7 +389,7 @@ actor YouTubeNDescrambler {
             return nil
         }
         let hasSpc = hlsManifestStr.contains("spc")
-        log.notice("⚠️ [ytDlp/sim] hlsManifestUrl hasSpc=\(hasSpc, privacy: .public): \(String(hlsManifestStr.prefix(80)), privacy: .public)")
+        log.notice("⚠️ [ytDlp/sim] hlsManifestUrl hasSpc=\(hasSpc, privacy: .public)")
 
         // Step 3: Fetch HLS master manifest → pick best ≥720p per-quality hls_playlist URL.
         guard let (manifestData, manifestResp) = try? await URLSession.shared.data(from: hlsManifestURL),
@@ -401,8 +401,8 @@ actor YouTubeNDescrambler {
         }
 
         let result = parseBestHLSPlaylistURL(from: manifest, minHeight: 720)
-        if let result {
-            log.notice("✅ [ytDlp/sim] self-contained HLS URL found: \(String(result.absoluteString.prefix(80)), privacy: .public)")
+        if result != nil {
+            log.notice("✅ [ytDlp/sim] self-contained HLS URL found")
         } else {
             log.notice("⚠️ [ytDlp/sim] no ≥720p playlist found in master manifest")
         }

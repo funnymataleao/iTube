@@ -15,6 +15,9 @@ public struct SignInView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var showError = false
+    #if os(tvOS)
+    @State private var hasApprovedGoogleAccess = false
+    #endif
 
     public init() {}
 
@@ -67,7 +70,9 @@ public struct SignInView: View {
         ZStack(alignment: .topTrailing) {
             Color.black.opacity(0.85).ignoresSafeArea()
 
-            if let info = auth.pendingActivation {
+            if !hasApprovedGoogleAccess {
+                tvGoogleAccessDisclosure
+            } else if let info = auth.pendingActivation {
                 tvActivationView(info: info)
             } else {
                 tvLoadingView
@@ -91,10 +96,57 @@ public struct SignInView: View {
         .onChange(of: auth.error == nil ? 0 : 1) { _, hasError in
             if hasError == 1 { showError = true }
         }
-        .task { await auth.beginSignIn() }
         .onChange(of: auth.isSignedIn) { _, signedIn in
             if signedIn { dismiss() }
         }
+    }
+
+    private var tvGoogleAccessDisclosure: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Image(systemName: "person.crop.circle.badge.checkmark")
+                .font(.system(size: 54, weight: .semibold))
+                .foregroundStyle(.red)
+                .accessibilityHidden(true)
+
+            Text("Connect your Google account")
+                .font(.largeTitle.weight(.bold))
+                .accessibilityAddTraits(.isHeader)
+
+            Text("Sign-in is optional. If you continue, iTube will use the YouTube access you approve to:")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 980, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 18) {
+                Label("Show your YouTube identity, subscriptions, playlists, and account library", systemImage: "person.text.rectangle")
+                Label("Read and update watch activity needed for features you use", systemImage: "clock.arrow.circlepath")
+                Label("Perform actions you choose, such as subscribing or rating", systemImage: "hand.tap")
+            }
+            .font(.title3)
+
+            Text("Credentials are stored in the Apple Keychain. iTube does not sell Google account data or use it for advertising. You can disconnect at any time in Settings.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 1040, alignment: .leading)
+
+            HStack(spacing: 22) {
+                Button("Continue to Google") {
+                    hasApprovedGoogleAccess = true
+                    Task { await auth.beginSignIn() }
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("signin.continueButton")
+
+                Button("Not Now") {
+                    auth.cancelSignIn()
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(80)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .accessibilityIdentifier("signin.disclosure")
     }
 
     private var tvLoadingView: some View {
@@ -105,6 +157,7 @@ public struct SignInView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("signin.loading")
     }
 
     private func tvActivationView(info: AuthService.ActivationInfo) -> some View {
@@ -116,7 +169,7 @@ public struct SignInView: View {
                         .font(.system(size: 56))
                         .foregroundStyle(.red)
 
-                    Text("Sign in to SmartTube")
+                    Text("Sign in to iTube")
                         .font(.largeTitle).fontWeight(.bold)
 
                     Text("On any device, open the link below and enter the code.")
@@ -131,6 +184,7 @@ public struct SignInView: View {
                     Text(info.verificationURL.absoluteString)
                         .font(.title3).fontWeight(.semibold)
                         .foregroundStyle(.blue)
+                        .accessibilityIdentifier("signin.verificationURL")
                 }
 
                 Text(info.userCode)
@@ -140,6 +194,7 @@ public struct SignInView: View {
                     .padding(.horizontal, 32)
                     .background(Color.secondary.opacity(0.15))
                     .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .accessibilityIdentifier("signin.activationCode")
 
                 CountdownView(expiresAt: info.expiresAt) {
                     Task { await auth.beginSignIn() }
@@ -224,7 +279,7 @@ public struct SignInView: View {
                     .foregroundStyle(.red)
 
                 VStack(spacing: 6) {
-                    Text("Activate SmartTube")
+                    Text("Activate iTube")
                         .font(.title2).fontWeight(.bold)
                     Text("On this device, tap the button below — the sign-in page opens with your code already filled in.")
                         .font(.subheadline)

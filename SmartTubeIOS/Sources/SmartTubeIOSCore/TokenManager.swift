@@ -28,6 +28,8 @@ public actor TokenManager {
         public let tokenExpiry: Date?
         public let accountName: String?
         public let accountAvatarURL: URL?
+        /// Selected YouTube identity used by X-Goog-Pageid on mutations.
+        public let pageId: String?
         /// YouTube.com SAPISID cookie for WEB_CREATOR SAPISIDHASH auth.
         public let sapisid: String?
     }
@@ -39,6 +41,7 @@ public actor TokenManager {
     private var tokenExpiry: Date?
     private var accountName: String?
     private var accountAvatarURL: URL?
+    private var pageId: String?
     private var sapisid: String?
 
     private let service: String
@@ -78,6 +81,7 @@ public actor TokenManager {
             accountName:     Self.kcGet(service: keychainService, key: "st_account_name"),
             accountAvatarURL: Self.kcGet(service: keychainService, key: "st_avatar_url")
                                 .flatMap(URL.init(string:)),
+            pageId:           Self.kcGet(service: keychainService, key: "st_page_id"),
             sapisid:         Self.kcGet(service: keychainService, key: "st_sapisid")
         )
         initialSnapshot  = snap
@@ -86,6 +90,7 @@ public actor TokenManager {
         tokenExpiry      = snap.tokenExpiry
         accountName      = snap.accountName
         accountAvatarURL = snap.accountAvatarURL
+        pageId           = snap.pageId
         sapisid          = snap.sapisid
     }
 
@@ -96,6 +101,7 @@ public actor TokenManager {
     public func currentTokenExpiry() -> Date?    { tokenExpiry }
     public func currentAccountName() -> String?  { accountName }
     public func currentAvatarURL() -> URL?       { accountAvatarURL }
+    public func currentPageId() -> String?       { pageId }
     public func isSignedIn() -> Bool             { accessToken != nil }
 
     // MARK: - Mutations
@@ -105,13 +111,15 @@ public actor TokenManager {
         refresh: String?,
         expiry: Date?,
         accountName: String?,
-        avatarURL: URL?
+        avatarURL: URL?,
+        pageId: String? = nil
     ) {
         self.accessToken      = access
         self.refreshToken     = refresh
         self.tokenExpiry      = expiry
         self.accountName      = accountName
         self.accountAvatarURL = avatarURL
+        self.pageId           = pageId
         persistToKeychain()
         continuation?.yield(.refreshed(token: access, expiresAt: expiry))
     }
@@ -129,6 +137,7 @@ public actor TokenManager {
         tokenExpiry      = nil
         accountName      = nil
         accountAvatarURL = nil
+        pageId           = nil
         sapisid          = nil
         deleteFromKeychain()
         continuation?.yield(.signedOut)
@@ -143,11 +152,12 @@ public actor TokenManager {
         Self.kcSet(service: service, key: "st_token_expiry",  value: tokenExpiry.map { fmt.string(from: $0) })
         Self.kcSet(service: service, key: "st_account_name",  value: accountName)
         Self.kcSet(service: service, key: "st_avatar_url",    value: accountAvatarURL?.absoluteString)
+        Self.kcSet(service: service, key: "st_page_id",      value: pageId)
     }
 
     private func deleteFromKeychain() {
         for key in ["st_access_token", "st_refresh_token", "st_token_expiry",
-                    "st_account_name", "st_avatar_url", "st_sapisid"] {
+                    "st_account_name", "st_avatar_url", "st_page_id", "st_sapisid"] {
             Self.kcDelete(service: service, key: key)
         }
     }
@@ -183,7 +193,8 @@ public actor TokenManager {
             kSecAttrService:    service,
             kSecAttrAccount:    key,
             kSecValueData:      data,
-            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
+            // OAuth credentials must not migrate to another device backup.
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         SecItemAdd(addQuery as CFDictionary, nil)
     }

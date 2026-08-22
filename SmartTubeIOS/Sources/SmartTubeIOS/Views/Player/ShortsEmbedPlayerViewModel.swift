@@ -3,6 +3,7 @@ import Foundation
 import CoreFoundation
 import AVFoundation
 import WebKit
+import Observation
 import os
 import SmartTubeIOSCore
 
@@ -107,6 +108,10 @@ final class ShortsEmbedPlayerViewModel: NSObject {
     // MARK: - Dependencies
 
     private(set) var settings: AppSettings = AppSettings()
+    /// Non-nil only while the app is in authenticated mode. SponsorBlock uses
+    /// this as a capability token, independently of its persisted preference.
+    var sponsorBlockAuthToken: String?
+    @ObservationIgnored var authUpdateRevision: UInt = 0
     /// Used by `fetchSponsorSegments()` (ShortsEmbedPlayerViewModel+SponsorBlock.swift,
     /// Task 6).
     let sponsorService = SponsorBlockService()
@@ -238,6 +243,41 @@ final class ShortsEmbedPlayerViewModel: NSObject {
     /// Called from `ShortsPlayerView.onAppear`. Mirrors `TOSPlayerViewModel.updateSettings(_:)`.
     func updateSettings(_ newSettings: AppSettings) {
         settings = newSettings
+    }
+
+    func updateAuthToken(_ token: String?) {
+        let effectiveToken = token.flatMap { $0.isEmpty ? nil : $0 }
+        authUpdateRevision &+= 1
+        let revision = authUpdateRevision
+        sponsorBlockAuthToken = effectiveToken
+        if effectiveToken == nil {
+            sponsorTask?.cancel()
+            sponsorTask = nil
+            sponsorSegments = []
+            currentToastSegment = nil
+            activeSkipEnd = nil
+            pendingSkipLog = nil
+            lastLoggedToastSegment = nil
+            lastLoggedNearEndSegment = nil
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.api.setAuthToken(effectiveToken)
+            guard self.authUpdateRevision == revision else {
+                let latest = self.sponsorBlockAuthToken
+                await self.api.setAuthToken(latest)
+                await VideoPreloadCache.shared.setAuthToken(latest)
+                return
+            }
+            await VideoPreloadCache.shared.setAuthToken(effectiveToken)
+            guard self.authUpdateRevision == revision else {
+                let latest = self.sponsorBlockAuthToken
+                await self.api.setAuthToken(latest)
+                await VideoPreloadCache.shared.setAuthToken(latest)
+                return
+            }
+        }
+        tracker.setTrackingURLs(nil)
     }
 
     // MARK: - Loading

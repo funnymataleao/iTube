@@ -7,8 +7,8 @@ import XCTest
 // D-pad, each section shows content or empty state, and back-navigation restores
 // the Home feed.
 //
-// Run against the "Smart Tube" tvOS scheme:
-//   xcodebuild test -workspace SmartTube.xcworkspace -scheme "Smart Tube"
+// Run against the iTube tvOS scheme:
+//   xcodebuild test -workspace SmartTube.xcworkspace -scheme iTube
 //     -destination "id=30E83929-0C67-4572-82C4-FE0F228EA835"
 //     -only-testing:SmartTubeTVUITests/TVLibraryUITests
 

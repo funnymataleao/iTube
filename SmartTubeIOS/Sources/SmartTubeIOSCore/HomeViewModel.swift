@@ -139,7 +139,7 @@ public final class HomeViewModel {
 
     private let api: any InnerTubeAPIProtocol
     private var loadTask: Task<Void, Never>?
-    private var hideObserverTasks: [Task<Void, Never>] = []
+    private var hideObserverTokens: [NSObjectProtocol] = []
     /// Tracks whether a non-nil auth token has been set. Used to distinguish a
     /// sign-in event (nil → non-nil) from a token refresh (non-nil → new non-nil)
     /// so that token refreshes during video playback do not trigger a feed reload.
@@ -151,20 +151,23 @@ public final class HomeViewModel {
         observeFeedHideNotifications()
     }
 
+    isolated deinit {
+        for token in hideObserverTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
     // MARK: - Feed hide handling
 
     private func observeFeedHideNotifications() {
-        hideObserverTasks.append(Task { [weak self] in
-            for await note in NotificationCenter.default.notifications(named: .hideVideoFromFeed) {
-                guard let self, let videoId = note.userInfo?["videoId"] as? String else { continue }
-                self.removeVideo(id: videoId)
-            }
+        let center = NotificationCenter.default
+        hideObserverTokens.append(center.addObserver(forName: .hideVideoFromFeed, object: nil, queue: .main) { [weak self] note in
+            guard let videoId = note.userInfo?["videoId"] as? String else { return }
+            Task { @MainActor [weak self] in self?.removeVideo(id: videoId) }
         })
-        hideObserverTasks.append(Task { [weak self] in
-            for await note in NotificationCenter.default.notifications(named: .hideChannelFromFeed) {
-                guard let self, let channelId = note.userInfo?["channelId"] as? String else { continue }
-                self.removeChannel(id: channelId)
-            }
+        hideObserverTokens.append(center.addObserver(forName: .hideChannelFromFeed, object: nil, queue: .main) { [weak self] note in
+            guard let channelId = note.userInfo?["channelId"] as? String else { return }
+            Task { @MainActor [weak self] in self?.removeChannel(id: channelId) }
         })
     }
 
@@ -189,7 +192,8 @@ public final class HomeViewModel {
     public func cancel() {
         loadTask?.cancel()
         shortsPreloadTask?.cancel()
-        hideObserverTasks.forEach { $0.cancel() }
+        hideObserverTokens.forEach { NotificationCenter.default.removeObserver($0) }
+        hideObserverTokens.removeAll()
     }
 
     // MARK: - Public API
@@ -209,7 +213,7 @@ public final class HomeViewModel {
             sections[i].nextPageToken = nil
         }
 
-        loadTask = Task {
+        loadTask = Task { [self] in
             // Fetch shorts via FEshorts in parallel with the home/subs feed.
             // The TV home feed (FEwhat_to_watch) never includes a Shorts shelf.
             async let fetchedShortsResult: ([Video], String?) = HomeViewModel.fetchShortsVideos(api: self.api)
@@ -363,7 +367,7 @@ public final class HomeViewModel {
     private func fetchOneShortsPage() async -> Bool {
         // Phase 1: one search page (srch: token from fetchShorts).
         if let token = shortsNextPageToken {
-            homeLog.notice("fetchOneShortsPage search: fetching token=\(String(token.prefix(16)))\u{2026}")
+            homeLog.notice("fetchOneShortsPage search: fetching continuation")
             do {
                 let more = try await api.fetchShortsMore(continuationToken: token)
                 let existingIDs = Set(shortsVideos.map(\.id))
@@ -383,7 +387,7 @@ public final class HomeViewModel {
         // Phase 2: one subs page when search is exhausted or returned nothing new.
         if let idx = sections.firstIndex(where: { $0.section.type == .subscriptions }),
            let token = sections[idx].nextPageToken {
-            homeLog.notice("fetchOneShortsPage subs: fetching token=\(String(token.prefix(16)))\u{2026}")
+            homeLog.notice("fetchOneShortsPage subs: fetching continuation")
             let more = await Self.fetchMoreVideos(type: .subscriptions, token: token, api: api)
             let existingIDs = Set(sections[idx].videos.map(\.id))
             let newVideos = more.0.filter { !existingIDs.contains($0.id) }

@@ -23,11 +23,25 @@ extension PlaybackViewModel {
                 // scheduleControlsHide(), which cancels and restarts the 4 s hide-timer
                 // every 0.5 s, preventing controls from ever auto-hiding post-scrub.
                 guard !self.isScrubbing else { return }
-                guard !self.sponsorBlockManager.isSkippingSegment else { return }
                 // Suspend time updates during a quality-change transition: the new
                 // AVPlayerItem is not yet ready and player.currentTime() may return 0
                 // or a stale value. currentTime is restored by qualityItemDidBecomeReady.
                 guard !self.isQualityChangePending else { return }
+                #if os(tvOS)
+                if ProcessInfo.processInfo.arguments.contains("--playback-diagnostics") {
+                    let previousSecond = Int(self.currentTime)
+                    let currentSecond = Int(seconds)
+                    if currentSecond > 0,
+                       currentSecond != previousSecond,
+                       currentSecond.isMultiple(of: 5) {
+                        playerLog.notice(
+                            "[diagnostic] playback advanced to \(currentSecond)s "
+                            + "rate=\(self.player.rate) "
+                            + "timeControlStatus=\(self.player.timeControlStatus.rawValue)"
+                        )
+                    }
+                }
+                #endif
                 self.currentTime = seconds
                 self.checkSponsorSkip(at: seconds)
                 self.updateCaptionCue(for: seconds)
@@ -45,6 +59,9 @@ extension PlaybackViewModel {
             guard let self, let newRate = change.newValue else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                if newRate > 0 {
+                    self.recordPlaybackStartIfNeeded()
+                }
                 // Ignore rate changes that we ourselves triggered (load/pause/resume/stop)
                 // by only acting when the player goes silent unexpectedly while we
                 // believed it was playing.
@@ -58,8 +75,21 @@ extension PlaybackViewModel {
                 // blocking the end-of-video / autoplay-next flow (crash log confirmed
                 // via Crashlytics: stall #1–4 at t=15s for a 15.3 s video).
                 let nearEnd = self.duration > 0 && self.currentTime >= self.duration - 1.0
-                let playerWentSilent = newRate == 0 && self.isPlaying && !self.isSwappingItem && !self.isHandlingAudioInterruption && !nearEnd
-                if playerWentSilent {
+                // AVPlayer.timeControlStatus (KVO-observable) distinguishes an
+                // intentional pause (.paused — "doesn't resume until play()") from
+                // a buffering stall (.waitingToPlayAtSpecifiedRate). On tvOS the
+                // native AVKit transport bar calls player.pause() directly, which
+                // sets timeControlStatus to .paused — without this guard the rate
+                // observer treats that as a stall and auto-resumes ~2 s later.
+                let isIntentionalPause = self.player.timeControlStatus == .paused
+                let playerWentSilent = newRate == 0 && self.isPlaying && !self.isSwappingItem && !self.isHandlingAudioInterruption && !nearEnd && !isIntentionalPause
+                if newRate == 0 && self.isPlaying && isIntentionalPause {
+                    self.isPlaying = false
+                    playerLog.notice("[rateObserver] player.rate→0 with timeControlStatus=.paused — intentional pause, syncing isPlaying=false (no stall recovery)")
+                    #if canImport(UIKit)
+                    self.updateNowPlayingPlayback()
+                    #endif
+                } else if playerWentSilent {
                     self.isPlaying = false
                     playerLog.notice("[rateObserver] player.rate→0 while isPlaying=true — syncing isPlaying=false")
                     self.stallCount += 1

@@ -8,6 +8,8 @@ import UIKit
 
 private let controlsLog = CrashlyticsLogger(category: "Player")
 
+#if !os(tvOS)
+
 // MARK: - PlayerControlsOverlay
 //
 // Dedicated view for the interactive transport controls overlaid on the player.
@@ -428,11 +430,7 @@ extension PlayerControlsOverlay {
     // MARK: - Progress bar
 
     var progressBar: some View {
-        #if os(tvOS)
-        tvProgressBar
-        #else
         iosProgressBar
-        #endif
     }
 
     var iosProgressBar: some View {
@@ -577,6 +575,8 @@ extension PlayerControlsOverlay {
     }
 }
 
+#endif
+
 // MARK: - Slide transition + toast/error (PlayerView extension)
 
 extension PlayerView {
@@ -611,41 +611,6 @@ extension PlayerView {
 
     // MARK: - Toast / error
 
-    var sponsorSkipToast: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                if let seg = vm.currentToastSegment {
-                    Button("Skip \(seg.category.displayName)") {
-                        vm.skipToastSegment()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(seg.category.color)
-                    #if os(tvOS)
-                    // When the skip-toast button is focused, D-pad left/right must still
-                    // seek. Without this modifier the move event is consumed by the button
-                    // and the ConditionalMoveCommand on the player body never fires
-                    // (it is intentionally disabled while the toast is active so that the
-                    // focus engine can see the button). Adding onMoveCommand here gives
-                    // the button a way to pass the direction through to seeking.
-                    .onMoveCommand { direction in
-                        switch direction {
-                        case .left:  vm.seekRelative(seconds: -Double(store.settings.seekBackSeconds))
-                        case .right: vm.seekRelative(seconds: Double(store.settings.seekForwardSeconds))
-                        default: break
-                        }
-                    }
-                    .focused($skipToastButtonFocused)
-                    #endif
-                    .padding()
-                    .transition(.move(edge: .trailing))
-                }
-            }
-        }
-        .animation(.easeInOut, value: vm.currentToastSegment?.id)
-    }
-
     // Returns true when the error is an IP/VPN block (APIError.ipBlocked).
     // Extracted to a separate function so the Swift type-checker does not have to
     // resolve a closure-in-body pattern while simultaneously inferring `some View`.
@@ -661,6 +626,7 @@ extension PlayerView {
         return false
     }
 
+    #if !os(tvOS)
     @ViewBuilder
     func errorBanner(_ err: Error) -> some View {
         // IP-block errors show a specific message and no retry button — retrying
@@ -676,17 +642,10 @@ extension PlayerView {
                     .foregroundStyle(.white)
             }
             if !isIPBlock && !isSignInRequired {
-                Button {
+                Button("Try Again") {
                     vm.retryLoad()
-                } label: {
-                    Text("Try Again")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
-                        .background(Color.white)
-                        .clipShape(Capsule())
                 }
+                .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("player.retryButton")
             }
             if isSignInRequired {
@@ -699,6 +658,7 @@ extension PlayerView {
         .padding()
         .accessibilityIdentifier(isIPBlock ? "player.ipBlockBanner" : "player.errorBanner")
     }
+    #endif
 }
 
 #if !os(tvOS)
@@ -798,13 +758,13 @@ extension PlayerControlsOverlay {
 // dedicated scope.  PlayerControlsOverlay cannot hold its own mutable @State in
 // the extension methods where this is used, so we delegate to this tiny helper.
 private struct SignInButtonView: View {
-    @State private var showSignIn = false
+    @State private var showSettings = false
 
     var body: some View {
         Button {
-            showSignIn = true
+            showSettings = true
         } label: {
-            Text("Sign In")
+            Text("Open Settings")
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.black)
                 .padding(.horizontal, 20)
@@ -813,6 +773,6 @@ private struct SignInButtonView: View {
                 .clipShape(Capsule())
         }
         .accessibilityIdentifier("player.signInButton")
-        .sheet(isPresented: $showSignIn) { SignInView() }
+        .sheet(isPresented: $showSettings) { SettingsView() }
     }
 }

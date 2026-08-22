@@ -3,6 +3,7 @@ import Foundation
 import CoreFoundation
 import AVFoundation
 import WebKit
+import Observation
 import SmartTubeIOSCore
 import os
 #if os(iOS)
@@ -125,6 +126,10 @@ final class TOSPlayerViewModel: NSObject {
     // MARK: - Dependencies
 
     private(set) var settings: AppSettings = AppSettings()
+    /// SponsorBlock is an account-only capability; the stored preference alone
+    /// never authorizes segment fetching or seeking in guest mode.
+    var sponsorBlockAuthToken: String?
+    @ObservationIgnored var authUpdateRevision: UInt = 0
     /// Used by `fetchSponsorSegments()` (TOSPlayerViewModel+SponsorBlock.swift).
     let sponsorService = SponsorBlockService()
     /// Passed to `likeDislike`/`comments` controllers and used to construct

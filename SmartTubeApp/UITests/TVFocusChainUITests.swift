@@ -6,7 +6,7 @@ import XCTest
 //   Tab bar → ↓ → Chips → ↓ → Video list → (select) → Video plays
 //   Video list → Esc (Menu) → Chips (no video plays)
 //
-// Run against the "Smart Tube" tvOS target.
+// Run against the iTube tvOS target.
 // XCUIRemote simulates Siri Remote D-pad, select, and menu (back) presses.
 
 final class TVFocusChainUITests: XCTestCase {

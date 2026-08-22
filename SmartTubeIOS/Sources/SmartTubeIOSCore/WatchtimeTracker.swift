@@ -19,10 +19,12 @@ private let trackerLog = Logger(subsystem: appSubsystem, category: "WatchtimeTra
 //   setTrackingURLs(_:)
 //     → called once authenticated tracking URLs resolve in loadAsync.
 //
+//   playbackStarted()
+//     → called when AVPlayer's rate first becomes positive; immediately records
+//       the view instead of waiting for the player to close.
+//
 //   checkpoint(position:duration:)
-//     → called from suspend(), stop().
-//       The segment start is recorded lazily on the first call,
-//       which also fires reportPlaybackStarted.
+//     → called from suspend(), stop(); saves progress and reports watchtime.
 
 @MainActor
 public final class WatchtimeTracker {
@@ -34,8 +36,7 @@ public final class WatchtimeTracker {
     private var videoId: String = ""
     private var cpn: String = ""
     private var trackingURLs: PlaybackTrackingURLs?
-    /// Nil until the first checkpoint() — the lazy segment start.
-    /// First checkpoint sets this and fires reportPlaybackStarted.
+    /// Nil until playback actually starts (or a defensive first checkpoint).
     private var segmentStart: TimeInterval?
 
     // MARK: - Init
@@ -76,7 +77,7 @@ public final class WatchtimeTracker {
         trackingURLs = nil
         segmentStart = nil
 
-        trackerLog.notice("transition: \(oldVideoId, privacy: .public) → \(newVideoId, privacy: .public) cpn=\(newCPN.prefix(8), privacy: .public)…")
+        trackerLog.notice("transition: \(oldVideoId, privacy: .private(mask: .hash)) → \(newVideoId, privacy: .private(mask: .hash))")
 
         return {
             guard !oldVideoId.isEmpty, flushDuration > 0 else { return }
@@ -105,13 +106,29 @@ public final class WatchtimeTracker {
         trackerLog.notice("setTrackingURLs: \(urls != nil ? "account-bound" : "nil", privacy: .public)")
     }
 
+    // MARK: - Playback start
+
+    /// Records the start as soon as AVPlayer begins advancing. This used to wait
+    /// until pause/stop, which made very recent videos absent from server History.
+    /// Setting `segmentStart` before awaiting makes repeated rate changes idempotent.
+    public func playbackStarted() async {
+        guard !videoId.isEmpty, segmentStart == nil else { return }
+
+        let vid = videoId
+        let localCPN = cpn
+        let localURLs = trackingURLs
+        segmentStart = 0
+        trackerLog.notice("playbackStarted: videoId=\(vid, privacy: .public) — firing immediately")
+        await api.reportPlaybackStarted(videoId: vid, cpn: localCPN, trackingURLs: localURLs)
+    }
+
     // MARK: - Checkpoint (suspend / stop)
 
     /// Records the current watch position and reports the watched interval.
     ///
-    /// The first call is the lazy playback-start: it fires `reportPlaybackStarted`
-    /// and records the segment start. Subsequent calls save the position and
-    /// report the interval [segmentStart, position].
+    /// If no positive player rate was observed, the first checkpoint defensively
+    /// sends `reportPlaybackStarted`. Subsequent calls save the position and report
+    /// the interval [segmentStart, position].
     public func checkpoint(position: TimeInterval, duration: TimeInterval) async {
         guard !videoId.isEmpty, duration > 0 else { return }
 
@@ -124,9 +141,8 @@ public final class WatchtimeTracker {
             // rather than [position, position]. YouTube ignores zero-length watchtime
             // segments (st == et), which would prevent cmt from being recorded and
             // leave the watch-progress bar stuck at a stale value.
-            segmentStart = 0
             trackerLog.notice("checkpoint (first): videoId=\(vid, privacy: .public) pos=\(Int(position))s — firing playbackStarted")
-            await api.reportPlaybackStarted(videoId: vid, cpn: localCPN, trackingURLs: localURLs)
+            await playbackStarted()
         }
 
         let segStart = segmentStart ?? 0

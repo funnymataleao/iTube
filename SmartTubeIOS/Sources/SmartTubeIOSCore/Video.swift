@@ -10,9 +10,17 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
     public var channelId: String?
     public var description: String?
     public var thumbnailURL: URL?
+    /// All thumbnail URLs provided by YouTube API, sorted by resolution (largest first).
+    /// Used for automatic fallback when the primary thumbnailURL fails to load.
+    public var thumbnailCandidates: [URL]?
     public var duration: TimeInterval?      // seconds
     public var viewCount: Int?
     public var publishedAt: Date?
+    /// Exact public timestamp when the source supplied one (RSS or
+    /// `videos.list(part=snippet)`). Feed renderers often provide only a coarse
+    /// relative label; keeping the exact value separate prevents `Today` from
+    /// being presented as a fabricated "1 minute ago".
+    public var exactPublishedAt: Date?
     /// Raw relative-date text from the API (e.g. "2 years ago", "3 months ago").
     /// Preserved for display so the UI shows the honest approximation instead of
     /// formatting the computed `publishedAt` as a precise "May 12"-style string.
@@ -44,8 +52,8 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
     public var isDownloaded: Bool { localFileURL != nil }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, channelTitle, channelId, description, thumbnailURL, duration
-        case viewCount, publishedAt, publishedTimeText, isLive, isUpcoming, isShort, hasPortraitThumbnail
+        case id, title, channelTitle, channelId, description, thumbnailURL, thumbnailCandidates, duration
+        case viewCount, publishedAt, exactPublishedAt, publishedTimeText, isLive, isUpcoming, isShort, hasPortraitThumbnail
         case watchProgress, playlistId, playlistIndex, badges
         case notInterestedToken, dontLikeToken, hideChannelToken
         case deArrowTitle, deArrowThumbnailTimestamp
@@ -59,9 +67,11 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
         channelId: String? = nil,
         description: String? = nil,
         thumbnailURL: URL? = nil,
+        thumbnailCandidates: [URL]? = nil,
         duration: TimeInterval? = nil,
         viewCount: Int? = nil,
         publishedAt: Date? = nil,
+        exactPublishedAt: Date? = nil,
         publishedTimeText: String? = nil,
         isLive: Bool = false,
         isUpcoming: Bool = false,
@@ -81,9 +91,11 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
         self.channelId = channelId
         self.description = description
         self.thumbnailURL = thumbnailURL
+        self.thumbnailCandidates = thumbnailCandidates
         self.duration = duration
         self.viewCount = viewCount
         self.publishedAt = publishedAt
+        self.exactPublishedAt = exactPublishedAt
         self.publishedTimeText = publishedTimeText
         self.isLive = isLive
         self.isUpcoming = isUpcoming
@@ -107,11 +119,15 @@ public struct Chapter: Identifiable, Hashable, Sendable, Codable {
     public let id: UUID
     public let title: String
     public let startTime: TimeInterval  // seconds from the start
+    /// Genuine chapter artwork supplied by YouTube. The player never invents or
+    /// repeats thumbnails when the endpoint does not provide one.
+    public let thumbnailURL: URL?
 
-    public init(title: String, startTime: TimeInterval) {
+    public init(title: String, startTime: TimeInterval, thumbnailURL: URL? = nil) {
         self.id = UUID()
         self.title = title
         self.startTime = startTime
+        self.thumbnailURL = thumbnailURL
     }
 }
 
@@ -132,6 +148,17 @@ public extension Video {
         }
     }
 
+    /// Maximum-resolution thumbnail (1280×720) when the uploader supplied one.
+    /// Not every video has this asset, so callers must retain a fallback chain.
+    var maxResolutionThumbnailURL: URL? {
+        URL(string: "https://i.ytimg.com/vi/\(id)/maxresdefault.jpg")
+    }
+
+    /// HD thumbnail (1280×720) used when `maxresdefault` is unavailable.
+    var highDefinitionThumbnailURL: URL? {
+        URL(string: "https://i.ytimg.com/vi/\(id)/hq720.jpg")
+    }
+
     /// High-quality thumbnail URL using YouTube's image CDN (480×360, always available).
     var highQualityThumbnailURL: URL? {
         URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg")
@@ -147,10 +174,17 @@ public extension Video {
         URL(string: "https://i.ytimg.com/vi/\(id)/mqdefault.jpg")
     }
 
-    /// Ordered static CDN fallbacks to try when `thumbnailURL` fails.
-    /// Priority: sddefault (640×480) → hqdefault (480×360) → mqdefault (320×180).
+    /// Ordered static CDN fallbacks to try when YouTube's response-provided URL fails.
+    /// Prefer 720p sources before accepting SD artwork; the latter looks visibly
+    /// pixelated in the large 4K tvOS cards.
     var thumbnailFallbackURLs: [URL] {
-        [sdThumbnailURL, highQualityThumbnailURL, mqThumbnailURL].compactMap { $0 }
+        [
+            maxResolutionThumbnailURL,
+            highDefinitionThumbnailURL,
+            sdThumbnailURL,
+            highQualityThumbnailURL,
+            mqThumbnailURL,
+        ].compactMap { $0 }
     }
 
     /// Portrait (9:16) thumbnail used for Shorts cards.

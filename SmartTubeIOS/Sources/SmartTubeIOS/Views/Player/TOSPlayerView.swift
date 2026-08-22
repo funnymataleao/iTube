@@ -123,7 +123,7 @@ public struct TOSPlayerView: View {
         // RootView.body — `if let video = browseVM.deepLinkedVideo { TOSPlayerView(...) }`),
         // sitting alongside (not replacing) the NavigationSplitView. macOS draws the
         // window's titlebar/toolbar (traffic lights, sidebar toggle, back chevron,
-        // "SmartTube" title) as OS-level chrome ABOVE the content view's z-order —
+        // "iTube" title) as OS-level chrome ABOVE the content view's z-order —
         // no amount of SwiftUI overlay/zIndex/.ignoresSafeArea() can cover it, because
         // it isn't part of the content view's layer at all. `safeAreaInsets.top` is
         // exactly the height SwiftUI reserves to avoid drawing under that chrome, so
@@ -150,7 +150,7 @@ public struct TOSPlayerView: View {
         }
         #endif
         return AnyView(
-        GeometryReader { geo in
+        GeometryReader { [vm] geo in
             ZStack(alignment: .topLeading) {
                 // Full-bleed black background. `.ignoresSafeArea()` is applied to
                 // this layer (and to the WKWebView layer below) individually —
@@ -285,6 +285,9 @@ public struct TOSPlayerView: View {
             let physicallyLandscape = UIDevice.current.orientation.isLandscape
             OrientationManager.shared.playerIsActive = isLandscapeLocked || store.settings.landscapeAlwaysPlay || physicallyLandscape
             #endif
+        }
+        .onChange(of: authService.accessToken) { _, token in
+            vm.updateAuthToken(token)
         }
         // Pause the embedded <video> element when this view leaves the hierarchy.
         //
@@ -637,6 +640,10 @@ public struct TOSPlayerView: View {
             HStack {
                 Spacer()
                 Button {
+                    guard vm.sponsorBlockAuthToken != nil else {
+                        vm.currentToastSegment = nil
+                        return
+                    }
                     vm.seekTo(segment.end)
                     vm.currentToastSegment = nil
                 } label: {
@@ -680,9 +687,13 @@ public struct TOSPlayerView: View {
 #if os(macOS)
 private struct YouTubeWebPlayerView: NSViewRepresentable {
     let webView: WKWebView
+    let onWindowReady: (() -> Void)?
 
     func makeNSView(context: Context) -> WKWebView {
         webView.autoresizingMask = [.width, .height]
+        // The view model applies its own 1.5-second presentation delay. Calling
+        // here gives macOS the same idempotent start signal as the UIKit host.
+        onWindowReady?()
         return webView
     }
 

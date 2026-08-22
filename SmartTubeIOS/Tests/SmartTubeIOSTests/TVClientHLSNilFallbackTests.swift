@@ -4,7 +4,7 @@ import Testing
 
 // MARK: - TVClientHLSNilFallbackTests (NW-3-FIX)
 //
-// Verifies the model-level condition that guards the NW-3-FIX fallback in
+// Verifies the model-level condition used by the authenticated-TV fallback in
 // PlaybackViewModel+Loading.swift.
 //
 // When the TV authenticated client returns a `PlayerInfo` with:
@@ -12,11 +12,12 @@ import Testing
 //   - bestAdaptiveVideoURL = nil  (no video-only adaptive stream)
 //   - bestAdaptiveAudioURL = nil  (no audio-only adaptive stream)
 //
-// …the fallback condition fires and the Android client is used instead, avoiding
-// an AVFoundationErrorDomain -11828 / NSOSStatusErrorDomain -12847 failure.
+// …a direct muxed MP4 must be retained instead of being discarded solely because
+// the response has no HLS or separate adaptive pair.
 //
 // The fix lives in PlaybackViewModel+Loading.swift:
 //   if info.hlsURL == nil,
+//      info.bestMuxedDownloadURL == nil,
 //      info.bestAdaptiveVideoURL == nil || info.bestAdaptiveAudioURL == nil { … }
 //
 // These tests validate the three `PlayerInfo` computed properties that feed that
@@ -31,14 +32,14 @@ struct TVClientHLSNilFallbackTests {
         Video(id: "test-video", title: "Test", channelTitle: "Channel")
     }
 
-    /// A `PlayerInfo` shaped like a TV-client response for DRM/protected content:
-    /// only a muxed MP4 (itag=18, two codecs), no HLS, no adaptive streams.
+    /// A `PlayerInfo` shaped like the current authenticated TV response:
+    /// direct muxed MP4 (itag=18), no HLS, no adaptive streams.
     private func makeMuxedOnlyPlayerInfo() -> PlayerInfo {
         let muxedFormat = VideoFormat(
             label: "360p",
             width: 640, height: 360, fps: 30,
             mimeType: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
-            url: URL(string: "https://r1---sn-foo.googlevideo.com/videoplayback?itag=18"),
+            url: URL(string: "https://r1---sn-foo.googlevideo.com/videoplayback?itag=18&c=TVHTML5"),
             bitrate: 500_000
         )
         return PlayerInfo(
@@ -114,13 +115,14 @@ struct TVClientHLSNilFallbackTests {
         #expect(info.bestAdaptiveAudioURL == nil)
     }
 
-    @Test("Muxed-only TV response: NW-3-FIX fallback condition fires")
-    func muxedOnlyFallbackConditionFires() {
+    @Test("Muxed-only TV response remains a playable fallback candidate")
+    func muxedOnlyDoesNotFallThroughToAndroid() {
         let info = makeMuxedOnlyPlayerInfo()
         let shouldFallback = info.hlsURL == nil &&
+            info.bestMuxedDownloadURL == nil &&
             (info.bestAdaptiveVideoURL == nil || info.bestAdaptiveAudioURL == nil)
-        #expect(shouldFallback,
-                "Expected NW-3-FIX condition to be true for muxed-only TV response")
+        #expect(!shouldFallback,
+                "Direct TVHTML5 muxed MP4 must remain eligible for playback")
     }
 
     // MARK: - HLS response (no fallback expected)
@@ -161,49 +163,39 @@ struct TVClientHLSNilFallbackTests {
                 "NW-3-FIX condition must not fire when adaptive streams are available")
     }
 
-    // MARK: - NW-3-FIX (extended): Android muxed-only response
+    // MARK: - Direct-stream fallback policy
 
-    /// Mirrors `retryWithFallbackPlayer`'s new NW-3-FIX-ANDROID guard:
-    ///   if fallbackInfo.hlsURL == nil,
-    ///      fallbackInfo.bestAdaptiveVideoURL == nil,
-    ///      fallbackInfo.bestAdaptiveAudioURL == nil { … }
-    private func shouldSkipAndroidMuxedFallback(_ info: PlayerInfo) -> Bool {
+    private func hasNoDirectPlaybackCandidate(_ info: PlayerInfo) -> Bool {
         info.hlsURL == nil &&
+        info.bestMuxedDownloadURL == nil &&
         info.bestAdaptiveVideoURL == nil &&
         info.bestAdaptiveAudioURL == nil
     }
 
-    @Test("NW-3-FIX-ANDROID: muxed-only Android response triggers early-exit guard")
-    func androidMuxedOnlyTriggersEarlyExit() {
+    @Test("Muxed-only response is not treated as missing direct playback")
+    func muxedOnlyIsDirectPlaybackCandidate() {
         let info = makeMuxedOnlyPlayerInfo()
-        // Same muxed-only shape applies whether from TV or Android client.
-        #expect(shouldSkipAndroidMuxedFallback(info),
-                "Guard must fire for muxed-only Android response to prevent AVFoundation -11828 non-fatal")
+        #expect(!hasNoDirectPlaybackCandidate(info))
     }
 
-    @Test("NW-3-FIX-ANDROID: HLS Android response does NOT trigger early-exit guard")
-    func androidHLSResponseDoesNotTriggerEarlyExit() {
+    @Test("HLS response is a direct playback candidate")
+    func hlsIsDirectPlaybackCandidate() {
         let info = makeHLSPlayerInfo()
-        #expect(!shouldSkipAndroidMuxedFallback(info),
-                "Guard must not fire when Android returns HLS")
+        #expect(!hasNoDirectPlaybackCandidate(info))
     }
 
-    @Test("NW-3-FIX-ANDROID: adaptive Android response does NOT trigger early-exit guard")
-    func androidAdaptiveResponseDoesNotTriggerEarlyExit() {
+    @Test("Adaptive response is a direct playback candidate")
+    func adaptiveIsDirectPlaybackCandidate() {
         let info = makeAdaptivePlayerInfo()
-        #expect(!shouldSkipAndroidMuxedFallback(info),
-                "Guard must not fire when Android returns adaptive streams")
+        #expect(!hasNoDirectPlaybackCandidate(info))
     }
 
-    @Test("NW-3-FIX-ANDROID: muxed-only response still has a preferredStreamURL (muxed URL)")
+    @Test("Muxed-only response exposes its direct preferredStreamURL")
     func androidMuxedOnlyHasPreferredStreamURL() {
-        // Confirms the guard is necessary — preferredStreamURL returns a non-nil muxed URL
-        // even in this case, so without the guard AVPlayer would be tried and fail.
         let info = makeMuxedOnlyPlayerInfo()
         #expect(info.preferredStreamURL != nil,
-                "muxed-only response has a preferredStreamURL — guard prevents handing it to AVPlayer")
-        #expect(shouldSkipAndroidMuxedFallback(info),
-                "Guard must fire so we don't pass the muxed URL to AVPlayer")
+                "muxed-only response must expose its direct MP4 URL")
+        #expect(!hasNoDirectPlaybackCandidate(info))
     }
 
     // MARK: - Fix #122: Android no-HLS with adaptive streams → use adaptive composition
@@ -243,12 +235,11 @@ struct TVClientHLSNilFallbackTests {
                 "Fix #122: delegation must not fire when Android returns HLS")
     }
 
-    @Test("Fix #122: muxed-only Android response does NOT trigger adaptive composition (caught by earlier guard)")
+    @Test("Fix #122: muxed-only response does not trigger adaptive composition")
     func fix122MuxedOnlyDoesNotTriggerDelegation() {
         // Muxed-only has no adaptive streams, so the Fix #122 condition is false.
-        // The earlier NW-3-FIX guard catches it first.
         let info = makeMuxedOnlyPlayerInfo()
         #expect(!shouldDelegateToAdaptiveComposition(info),
-                "Fix #122: delegation must not fire for muxed-only — NW-3-FIX guard handles it")
+                "Muxed-only playback must use the direct MP4 path")
     }
 }

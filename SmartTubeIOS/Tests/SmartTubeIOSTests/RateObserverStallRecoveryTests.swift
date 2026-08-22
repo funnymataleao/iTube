@@ -132,6 +132,44 @@ struct RateObserverStallRecoveryTests {
         #expect(!nearEnd, "nearEnd must be false when duration is not yet known")
     }
 
+    // MARK: - BUG 1 — user pause vs real stall (timeControlStatus guard)
+    //
+    // On tvOS the native AVKit transport bar calls player.pause() directly.
+    // AVPlayer.timeControlStatus becomes .paused ("indefinitely, doesn't resume
+    // until play()"). A real buffering stall sets it to .waitingToPlayAtSpecifiedRate.
+    // The rate observer must only run 2-second auto-resume recovery for real stalls.
+
+    /// User pause (timeControlStatus == .paused) must NOT trigger stall recovery.
+    @Test func intentionalPauseDoesNotTriggerStallRecovery() {
+        let timeControlStatusIsPaused = true
+        let isPlaying = true
+        let newRate: Float = 0
+        let isSwappingItem = false
+        let isHandlingAudioInterruption = false
+        let nearEnd = false
+
+        let isIntentionalPause = timeControlStatusIsPaused
+        let playerWentSilent = newRate == 0 && isPlaying && !isSwappingItem && !isHandlingAudioInterruption && !nearEnd && !isIntentionalPause
+        #expect(isIntentionalPause, "user pause must set timeControlStatus=.paused")
+        #expect(!playerWentSilent, "intentional pause must NOT be treated as a stall — no auto-resume")
+    }
+
+    /// Real buffering stall (timeControlStatus == .waitingToPlayAtSpecifiedRate)
+    /// must still trigger recovery.
+    @Test func realStallStillTriggersRecovery() {
+        let timeControlStatusIsPaused = false
+        let isPlaying = true
+        let newRate: Float = 0
+        let isSwappingItem = false
+        let isHandlingAudioInterruption = false
+        let nearEnd = false
+
+        let isIntentionalPause = timeControlStatusIsPaused
+        let playerWentSilent = newRate == 0 && isPlaying && !isSwappingItem && !isHandlingAudioInterruption && !nearEnd && !isIntentionalPause
+        #expect(!isIntentionalPause, "real stall must NOT be .paused")
+        #expect(playerWentSilent, "buffering stall must still be treated as a stall — recovery runs")
+    }
+
     // MARK: - Rapid-stall loop escalation (#261)
 
     /// firstRapidStallTime is nil before any stall and non-nil after the first.

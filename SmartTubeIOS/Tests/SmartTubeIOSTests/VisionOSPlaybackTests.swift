@@ -71,6 +71,18 @@ struct VisionOSPlaybackTests {
         #expect(!policy.filtersMasterManifest)
     }
 
+    @Test("TVHTML5 direct media uses the TV signing client UA")
+    func tvDirectMediaPolicy() throws {
+        let url = try #require(URL(string: "https://rr1.googlevideo.com/videoplayback?itag=18&c=TVHTML5"))
+        #expect(DirectPlaybackPolicy.resolve(url: url).userAgent == InnerTubeClients.TV.userAgent)
+    }
+
+    @Test("direct media without a client keeps the iOS default UA")
+    func defaultDirectMediaPolicy() throws {
+        let url = try #require(URL(string: "https://rr1.googlevideo.com/videoplayback?itag=18"))
+        #expect(DirectPlaybackPolicy.resolve(url: url).userAgent == InnerTubeClients.iOS.userAgent)
+    }
+
     @Test("filtered master keeps audio while removing VP9 and UHD variants")
     func filtersMasterForTVOS() {
         let manifest = """

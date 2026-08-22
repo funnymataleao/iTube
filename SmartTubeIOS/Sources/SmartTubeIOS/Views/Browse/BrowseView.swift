@@ -12,9 +12,7 @@ public struct BrowseView: View {
     @Environment(\.innerTubeAPI) private var api
     @State private var selectedVideo: Video?
     @State private var selectedPlaylist: Video?
-    @State private var shortsPresentation: ShortsPresentation?
     @State private var channelDestination: ChannelDestination?
-    @State private var showSignIn = false
     @State private var showError = false
     #if os(iOS)
     @Environment(PlayerRouter.self) private var playerRouter
@@ -59,46 +57,34 @@ public struct BrowseView: View {
         .onChange(of: vm.error == nil ? 0 : 1) { _, hasError in
             if hasError == 1 { showError = true }
         }
-        #if !os(macOS)
-        .fullScreenCover(item: $shortsPresentation) { target in
-            ShortsPlayerView(videos: target.videos, startIndex: target.startIndex, api: api)
-        }
-        #endif
-        .sheet(isPresented: $showSignIn) { SignInView() }
         .onAppear {
             if vm.videoGroups.isEmpty { vm.loadContent() }
         }
+        #if !os(tvOS)
         .refreshable { vm.loadContent(refresh: true) }
+        #endif
     }
 
     // MARK: - Subviews
 
     private var content: some View {
-        let isShorts = vm.currentSection.type == .shorts
-        let hideShorts = settings.settings.hideShorts
-        let axis: Axis.Set = isShorts ? .vertical : .horizontal
-
-        // Flatten all video groups into a single ordered list, filtering hidden shorts.
-        // Non-Shorts chips show portrait cards in a horizontal shelf; the Shorts chip
-        // shows them in a vertical scrolling layout.
         let allVideos: [Video] = vm.videoGroups
             .flatMap(\.videos)
-            .filter { !hideShorts || !$0.isShort }
+            .filter { !$0.isShort }
 
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if vm.isAuthRequired && !auth.isSignedIn { guestBanner }
-                ShortsRowSection(
+                VideoGridSection(
                     videos: allVideos,
                     onSelect: { selectVideo($0, from: allVideos) },
-                    accessibilityID: isShorts ? "shorts.section" : "browse.section",
                     loadMore: {
                         if let last = allVideos.last {
                             vm.loadMoreIfNeeded(lastVideo: last)
                         }
-                    },
-                    scrollAxis: axis
+                    }
                 )
+                .accessibilityIdentifier("browse.section")
                 if vm.isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding()
                 }
@@ -109,13 +95,16 @@ public struct BrowseView: View {
     private func selectVideo(_ video: Video, from groupVideos: [Video]) {
         if vm.currentSection.type == .playlists {
             selectedPlaylist = video
-        } else if video.isShort {
-            let shorts = groupVideos.filter { $0.isShort }
-            let idx = shorts.firstIndex(where: { $0.id == video.id }) ?? 0
-            shortsPresentation = ShortsPresentation(videos: shorts, startIndex: idx)
         } else {
             #if os(iOS)
             playerRouter.open(video: video, api: api)
+            #elseif os(tvOS)
+            let capturedVideos = groupVideos
+            Task { @MainActor in
+                await CurrentQueueStore.shared.replaceAll(with: capturedVideos)
+                let startIndex = capturedVideos.firstIndex(where: { $0.id == video.id }) ?? 0
+                selectedVideo = await CurrentQueueStore.shared.videoAt(index: startIndex) ?? video
+            }
             #else
             selectedVideo = video
             #endif
@@ -135,7 +124,7 @@ public struct BrowseView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Sign In") { showSignIn = true }
+            NavigationLink("Open Settings") { SettingsView() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
         }
@@ -158,7 +147,7 @@ public struct BrowseView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button("Sign In") { showSignIn = true }
+                NavigationLink("Open Settings") { SettingsView() }
                     .buttonStyle(.borderedProminent)
             } else {
                 Text("Nothing here yet")
@@ -190,12 +179,73 @@ public struct BrowseView: View {
 
 // MARK: - VideoGridSection
 
+#if os(tvOS)
+/// Gives every cell an explicit 16:9 proposal. A plain flexible `HStack` first
+/// measures `AsyncImage` at its 4:3 fallback size, which can make the whole row
+/// too tall and expose the letterbox bars embedded in YouTube's fallback art.
+private struct TVVideoGridRowLayout: Layout {
+    let columnCount: Int
+    let spacing: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let fallbackWidth = subviews.reduce(CGFloat.zero) { partial, subview in
+            partial + subview.sizeThatFits(.unspecified).width
+        } + spacing * CGFloat(max(0, columnCount - 1))
+        let width = max(proposal.width ?? fallbackWidth, spacing * CGFloat(max(0, columnCount - 1)))
+        return CGSize(width: width, height: cellWidth(for: width) * 9 / 16)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        let width = cellWidth(for: bounds.width)
+        let size = CGSize(width: width, height: width * 9 / 16)
+
+        for (index, subview) in subviews.enumerated() {
+            subview.place(
+                at: CGPoint(x: bounds.minX + CGFloat(index) * (width + spacing), y: bounds.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(size)
+            )
+        }
+    }
+
+    private func cellWidth(for totalWidth: CGFloat) -> CGFloat {
+        let gaps = spacing * CGFloat(max(0, columnCount - 1))
+        return max(0, (totalWidth - gaps) / CGFloat(columnCount))
+    }
+}
+#endif
+
 struct VideoGridSection: View {
     let videos: [Video]
     let onSelect: (Video) -> Void
     var loadMore: (() -> Void)? = nil
+    /// On tvOS, pagination should follow deliberate focus navigation instead of
+    /// the lazy layout merely creating its last row. Sparse filtered grids can
+    /// otherwise request every continuation page before the user scrolls.
+    var loadsMoreOnFocus = false
+    var showsChannelAvatar = true
+    /// Some drill-down screens have actionable content above the grid. They
+    /// can lower the grid's default-focus priority so the header remains the
+    /// first focus landmark and Up can return to the app's tab bar.
+    var prefersLeadingDefaultFocus = true
+    #if os(tvOS)
+    var restoreFocusedVideoID: String? = nil
+    var onFocusRestored: ((String) -> Void)? = nil
+    #endif
 
     @Environment(SettingsStore.self) private var store
+    #if os(tvOS)
+    @FocusState private var focusedVideoID: String?
+    #endif
     #if !os(tvOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// Rotated on every UIDevice orientation change so `.id(orientationToken)` forces
@@ -205,7 +255,11 @@ struct VideoGridSection: View {
     #endif
 
     var body: some View {
+        #if os(tvOS)
+        let compact = false
+        #else
         let compact = store.settings.compactThumbnails
+        #endif
         if compact {
             LazyVStack(spacing: 0) {
                 ForEach(videos) { video in
@@ -239,27 +293,38 @@ struct VideoGridSection: View {
             #if os(tvOS)
             // LazyVGrid on tvOS causes the first row of grid items to appear
             // invisible — the focus engine cannot traverse cells that have not
-            // been laid out yet. Use LazyVStack + HStack rows (4 per row) instead,
-            // which is the same approach BrowseView.content already uses on tvOS.
-            let columnCount = 4
+            // been laid out yet. Keep lazy rows, with an explicit 16:9 proposal
+            // for each of the three cards.
+            let columnCount = 3
             LazyVStack(alignment: .leading, spacing: videoGridRowSpacing) {
                 ForEach(Array(stride(from: 0, to: videos.count, by: columnCount)), id: \.self) { startIdx in
                     let rowVideos = Array(videos[startIdx..<min(startIdx + columnCount, videos.count)])
-                    HStack(alignment: .top, spacing: videoGridRowSpacing) {
+                    TVVideoGridRowLayout(columnCount: columnCount, spacing: videoGridRowSpacing) {
                         ForEach(rowVideos) { video in
-                            VideoCardView(video: video, compact: false, onSelect: { onSelect(video) })
-                                .frame(maxWidth: .infinity)
+                            VideoCardView(
+                                video: video,
+                                compact: false,
+                                showsChannelAvatar: showsChannelAvatar,
+                                onSelect: { onSelect(video) }
+                            )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .accessibilityIdentifier("video.card.\(video.id)")
+                                .id(video.id)
+                                .focused($focusedVideoID, equals: video.id)
                         }
                         let remainder = columnCount - rowVideos.count
                         if remainder > 0 {
                             ForEach(0..<remainder, id: \.self) { _ in
-                                Color.clear.frame(maxWidth: .infinity)
+                                Color.clear
+                                    .accessibilityHidden(true)
                             }
                         }
                     }
                     .onAppear {
-                        if rowVideos.last?.id == videos.last?.id { loadMore?() }
+                        if !loadsMoreOnFocus,
+                           rowVideos.last?.id == videos.last?.id {
+                            loadMore?()
+                        }
                     }
                 }
             }
@@ -267,12 +332,41 @@ struct VideoGridSection: View {
             .padding(.vertical, 8)
             #if os(tvOS)
             .focusSection()
+            // Entering a three-column grid from Search used to preserve the
+            // horizontal position of the filter control and land on card 3.
+            // User-initiated entry must start at the leading result instead.
+            .defaultFocus(
+                $focusedVideoID,
+                videos.first?.id,
+                priority: prefersLeadingDefaultFocus ? .userInitiated : .automatic
+            )
+            .onChange(of: focusedVideoID) { _, videoID in
+                guard loadsMoreOnFocus,
+                      let videoID,
+                      let index = videos.firstIndex(where: { $0.id == videoID }),
+                      index >= max(0, videos.count - (columnCount * 2))
+                else { return }
+                loadMore?()
+            }
+            .onChange(of: restoreFocusedVideoID, initial: true) { _, videoID in
+                guard let videoID, videos.contains(where: { $0.id == videoID }) else { return }
+                // Wait until the containing vertical ScrollView has brought the
+                // target row back on-screen, then hand focus to the exact card.
+                DispatchQueue.main.async {
+                    focusedVideoID = videoID
+                    onFocusRestored?(videoID)
+                }
+            }
             #endif
             #else
             let columns = horizontalSizeClass == .compact ? compactVideoGridColumns : regularVideoGridColumns
             LazyVGrid(columns: columns, spacing: videoGridRowSpacing) {
                 ForEach(videos) { video in
-                    VideoCardView(video: video, compact: false)
+                    VideoCardView(
+                        video: video,
+                        compact: false,
+                        showsChannelAvatar: showsChannelAvatar
+                    )
                         .accessibilityIdentifier("video.card.\(video.id)")
                         .accessibilityValue(video.isShort ? "short" : "")
                         .onTapGesture { onSelect(video) }
@@ -300,29 +394,82 @@ struct VideoGridSection: View {
 struct VideoRowSection: View {
     let videos: [Video]
     let onSelect: (Video) -> Void
+    var cardWidth: CGFloat = 360
+    var loadMore: (() -> Void)? = nil
+    #if os(tvOS)
+    var restoreFocusedVideoID: String? = nil
+    var onFocusRestored: ((String) -> Void)? = nil
+    #endif
 
-    var body: some View {
+    #if os(tvOS)
+    @FocusState private var focusedVideoID: String?
+    #endif
+
+    @ViewBuilder
+    private var horizontalScroll: some View {
         ScrollView(.horizontal, showsIndicators: false) {
+            Group {
+            #if os(tvOS)
+            // Lazy rendering is important for long TV shelves: an eager HStack
+            // makes every off-screen card appear immediately, which fires every
+            // continuation request at launch instead of when the viewer reaches
+            // the right edge.
+            LazyHStack(alignment: .top, spacing: videoGridRowSpacing) {
+                ForEach(videos) { video in
+                    VideoCardView(video: video, compact: false, onSelect: { onSelect(video) })
+                        .frame(width: cardWidth)
+                        .accessibilityIdentifier("video.card.\(video.id)")
+                        .id(video.id)
+                        .focused($focusedVideoID, equals: video.id)
+                        .onAppear {
+                            if video.id == videos.last?.id { loadMore?() }
+                        }
+                }
+            }
+            #else
             HStack(alignment: .top, spacing: videoGridRowSpacing) {
                 ForEach(videos) { video in
-                    #if os(tvOS)
-                    VideoCardView(video: video, compact: false, onSelect: { onSelect(video) })
-                        .frame(width: 360)
-                        .accessibilityIdentifier("video.card.\(video.id)")
-                    #else
                     VideoCardView(video: video, compact: false)
                         .frame(width: 220)
                         .accessibilityIdentifier("video.card.\(video.id)")
                         .onTapGesture { onSelect(video) }
-                    #endif
+                        .onAppear {
+                            if video.id == videos.last?.id { loadMore?() }
+                        }
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 4)
+            #endif
+            }
+            .padding(.leading, 32)
+            .padding(.trailing, 64)
+            .padding(.top, 22)
+            .padding(.bottom, 26)
         }
+    }
+
+    var body: some View {
         #if os(tvOS)
-        .focusSection()
+        ScrollViewReader { proxy in
+            horizontalScroll
+                .scrollClipDisabled()
+                .focusSection()
+                // `.automatic` ignores the default during a user-initiated Siri Remote
+                // move and preserves the X position from the previous shelf. Explicitly
+                // prioritize the leading card whenever focus enters this row vertically.
+                .defaultFocus($focusedVideoID, videos.first?.id, priority: .userInitiated)
+                .onChange(of: restoreFocusedVideoID, initial: true) { _, videoID in
+                    guard let videoID, videos.contains(where: { $0.id == videoID }) else { return }
+                    // The parent restores the vertical shelf first. One run-loop
+                    // later, restore this shelf's horizontal position and focus.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(videoID, anchor: .center)
+                        focusedVideoID = videoID
+                        onFocusRestored?(videoID)
+                    }
+                }
+        }
+        #else
+        horizontalScroll
         #endif
     }
 }
-

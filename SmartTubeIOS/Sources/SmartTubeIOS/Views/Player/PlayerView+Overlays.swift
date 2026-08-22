@@ -19,11 +19,13 @@ private struct MoreMenuContentHeightKey: PreferenceKey {
 // MARK: - PlayerView overlay sheets
 //
 // Pure-SwiftUI overlays rendered inside the player's ZStack so no UIKit
-// sheet presentation fires onDisappear and tears down playback.
+// sheet presentation fires onDisappear and tears down playback. On tvOS,
+// TVSystemPlayerView presents Description directly above AVPlayerViewController,
+// keeping playback and AVKit's view-controller hierarchy alive.
 //
 // Includes:
 //   • moreMenuOverlay      — all top-bar actions + share/download
-//   • descriptionOverlay   — scrollable video description
+//   • descriptionOverlay   — scrollable video description (non-tvOS)
 //   • commentsOverlay      — video comments list
 //   • loadComments()       — async comment fetching
 //   • descriptionAttributedString(_:) — URL linkification helper
@@ -66,11 +68,13 @@ extension PlayerView {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .animation(.easeOut(duration: 0.2), value: showSleepTimerPicker)
         }
+        #if !os(tvOS)
         if showDescriptionSheet {
             descriptionOverlay
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .animation(.easeOut(duration: 0.2), value: showDescriptionSheet)
         }
+        #endif
         if showCommentsSheet {
             commentsOverlay
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -220,6 +224,7 @@ extension PlayerView {
 
     // MARK: - Description overlay
 
+    #if !os(tvOS)
     var descriptionOverlay: some View {
         let currentVideo = vm.playerInfo?.video ?? video
         let description = currentVideo.description ?? ""
@@ -269,16 +274,13 @@ extension PlayerView {
             }
             .background(.regularMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 16))
-            #if os(tvOS)
-            .focusScope(descriptionOverlayNamespace)
-            .onExitCommand { showDescriptionSheet = false }
-            #endif
             .padding(.horizontal, 8)
             .safeAreaPadding(.horizontal)
             .padding(.bottom, 8)
         }
         .ignoresSafeArea()
     }
+    #endif
 
     func descriptionAttributedString(_ string: String) -> AttributedString {
         var attributed = AttributedString(string)

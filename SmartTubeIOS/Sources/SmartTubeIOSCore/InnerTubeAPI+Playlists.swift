@@ -49,6 +49,36 @@ extension InnerTubeAPI {
         return try parseVideoGroup(from: data, title: nil)
     }
 
+    /// Adds a video to an existing user playlist.
+    public func addVideoToPlaylist(videoId: String, playlistId: String) async throws {
+        var body = makeBody(client: tvClientContext)
+        body["playlistId"] = playlistId
+        body["actions"] = [[
+            "addedVideoId": videoId,
+            "action": "ACTION_ADD_VIDEO"
+        ]]
+        _ = try await postTV(endpoint: "browse/edit_playlist", body: body)
+        tubeLog.notice("addVideoToPlaylist videoId=\(videoId, privacy: .public) playlistId=\(playlistId, privacy: .public)")
+    }
+
+    /// Creates a private user playlist and returns its YouTube playlist ID.
+    public func createPlaylist(title: String) async throws -> PlaylistInfo {
+        var body = makeBody(client: tvClientContext)
+        body["title"] = title
+        body["privacyStatus"] = "PRIVATE"
+        body["privacy"] = "PRIVATE"
+        let data = try await postTV(endpoint: "playlist/create", body: body)
+        let nested = data["playlist"] as? [String: Any]
+        let playlistId = (data["playlistId"] as? String)
+            ?? (data["newPlaylistId"] as? String)
+            ?? (nested?["playlistId"] as? String)
+        guard let playlistId, !playlistId.isEmpty else {
+            throw APIError.decodingError("playlist/create response did not contain playlistId")
+        }
+        tubeLog.notice("createPlaylist playlistId=\(playlistId, privacy: .public)")
+        return PlaylistInfo(id: playlistId, title: title)
+    }
+
     // MARK: - Private playlist parser
 
     private func parsePlaylists(from json: [String: Any]) throws -> [PlaylistInfo] {

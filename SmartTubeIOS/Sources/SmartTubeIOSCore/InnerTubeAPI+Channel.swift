@@ -45,13 +45,19 @@ extension InnerTubeAPI {
     }
 
     public func fetchChannelVideos(channelId: String, continuationToken: String? = nil) async throws -> VideoGroup {
+        let resolvedId: String
+        if continuationToken == nil, channelId.hasPrefix("@") {
+            resolvedId = try await resolveChannelHandle(channelId)
+        } else {
+            resolvedId = channelId
+        }
         var body = makeBody(client: webClientContext, continuationToken: continuationToken)
         if continuationToken == nil {
-            body["browseId"] = channelId
+            body["browseId"] = resolvedId
             body["params"] = "EgZ2aWRlb3PyBgQKAjoA"  // "Videos" tab parameter
         }
         let videosParams = (body["params"] as? String) ?? "nil"
-        tubeLog.notice("fetchChannelVideos browseId=\(channelId, privacy: .public) hasContinuation=\(continuationToken != nil, privacy: .public) params=\(videosParams, privacy: .public)")
+        tubeLog.notice("fetchChannelVideos browseId=\(resolvedId, privacy: .public) hasContinuation=\(continuationToken != nil, privacy: .public) params=\(videosParams, privacy: .public)")
         let data = try await post(endpoint: "browse", body: body)
         return try parseVideoGroup(from: data, title: nil)
     }
@@ -73,11 +79,11 @@ extension InnerTubeAPI {
     /// for the handle and matching a `channelRenderer` result's
     /// `canonicalBaseUrl` against it — this is how the real channel ID
     /// (`UCExcZNwh_3Mwm4fF4VSiu2w` for `@nieuwsuur`) was found and verified live.
-    private func resolveChannelHandle(_ handle: String) async throws -> String {
+    func resolveChannelHandle(_ handle: String) async throws -> String {
         let handleURL = "https://www.youtube.com/\(handle)"
         var body = makeBody(client: webClientContext)
         body["url"] = handleURL
-        tubeLog.notice("resolveChannelHandle url=\(handleURL, privacy: .public)")
+        tubeLog.notice("resolveChannelHandle request prepared")
         do {
             let data = try await post(endpoint: "navigation/resolve_url", body: body)
             // Standard shape: { "endpoint": { "browseEndpoint": { "browseId": "UCxxx" } } }
@@ -179,6 +185,8 @@ extension InnerTubeAPI {
             return nil
         }()
         let subscribers = header.flatMap { $0["subscriberCountText"] as? [String: Any] }.flatMap { extractText($0) }
+        let isSubscribed = parseChannelSubscriptionState(from: json) ?? false
+        tubeLog.notice("parseChannel subscription state=\(isSubscribed, privacy: .public)")
 
         // Prefer the canonical UC… channelId from channelMetadataRenderer.externalId over
         // the browseId parameter — when a @handle is passed as browseId the parameter is
@@ -200,10 +208,64 @@ extension InnerTubeAPI {
             title: title,
             description: description,
             thumbnailURL: thumbURL,
-            subscriberCount: subscribers
+            subscriberCount: subscribers,
+            isSubscribed: isSubscribed
         )
         let videoGroup = try parseVideoGroup(from: json, title: title)
         return (channel, videoGroup)
+    }
+
+    /// Extracts the authenticated subscription state from both legacy channel
+    /// headers and the entity-backed subscribe button used by current YouTube.
+    /// The scan is deliberately limited to subscription-specific containers so
+    /// unrelated boolean fields cannot be mistaken for channel state.
+    private func parseChannelSubscriptionState(from json: [String: Any]) -> Bool? {
+        var result: Bool?
+
+        func subscribedValue(in container: [String: Any]) -> Bool? {
+            if let subscribed = container["subscribed"] as? Bool {
+                return subscribed
+            }
+            if let state = container["subscriptionState"] as? String {
+                switch state.uppercased() {
+                case "SUBSCRIBED", "SUBSCRIPTION_STATE_SUBSCRIBED": return true
+                case "UNSUBSCRIBED", "SUBSCRIPTION_STATE_UNSUBSCRIBED": return false
+                default: break
+                }
+            }
+            return nil
+        }
+
+        func walk(_ value: Any, depth: Int = 0) {
+            guard result == nil, depth < 60 else { return }
+            if let dictionary = value as? [String: Any] {
+                let subscriptionKeys = [
+                    "subscriptionButtonRenderer",
+                    "subscribeButtonRenderer",
+                    "subscribeButtonViewModel",
+                    "subscriptionStateEntity",
+                ]
+                for key in subscriptionKeys {
+                    if let container = dictionary[key] as? [String: Any],
+                       let subscribed = subscribedValue(in: container) {
+                        result = subscribed
+                        return
+                    }
+                }
+                for nestedValue in dictionary.values {
+                    walk(nestedValue, depth: depth + 1)
+                    if result != nil { return }
+                }
+            } else if let array = value as? [Any] {
+                for nestedValue in array {
+                    walk(nestedValue, depth: depth + 1)
+                    if result != nil { return }
+                }
+            }
+        }
+
+        walk(json)
+        return result
     }
 
     // MARK: – Guide channels parser (/guide endpoint)
@@ -233,10 +295,7 @@ extension InnerTubeAPI {
                         firstEntryDumped = true
                         let allKeys = entry.keys.sorted()
                         tubeLog.notice("guideEntryRenderer (channel) keys: \(allKeys, privacy: .public)")
-                        if let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]),
-                           let str = String(data: data, encoding: .utf8) {
-                            tubeLog.notice("guideEntryRenderer (channel) JSON: \(String(str.prefix(1500)), privacy: .public)")
-                        }
+                        tubeLog.notice("guideEntryRenderer channel payload detected")
                     }
 
                     guard let channelId, !channelId.isEmpty else { return }
@@ -358,18 +417,13 @@ extension InnerTubeAPI {
                 if !avatarLockupDumped, let lockup = dict["avatarLockupRenderer"] as? [String: Any],
                    lockup["navigationEndpoint"] != nil {
                     avatarLockupDumped = true
-                    if let data = try? JSONSerialization.data(withJSONObject: lockup, options: [.sortedKeys]),
-                       let str = String(data: data, encoding: .utf8) {
-                        tubeLog.notice("avatarLockupRenderer (with nav) JSON: \(String(str.prefix(2000)), privacy: .public)")
-                    }
+                    tubeLog.notice("avatarLockupRenderer with navigation detected")
                 }
                 // Dump the first notificationMultiActionRenderer (these appear per-channel)
-                if !notificationDumped, let notif = dict["notificationMultiActionRenderer"] as? [String: Any] {
+                if !notificationDumped,
+                   dict["notificationMultiActionRenderer"] is [String: Any] {
                     notificationDumped = true
-                    if let data = try? JSONSerialization.data(withJSONObject: notif, options: [.sortedKeys]),
-                       let str = String(data: data, encoding: .utf8) {
-                        tubeLog.notice("notificationMultiActionRenderer JSON: \(String(str.prefix(2000)), privacy: .public)")
-                    }
+                    tubeLog.notice("notificationMultiActionRenderer detected")
                 }
                 // TVHTML5 channel tile
                 if let tile = dict["tileRenderer"] as? [String: Any],
@@ -462,10 +516,7 @@ extension InnerTubeAPI {
                     // Dump the first tile to reveal its full structure
                     if !tileDumped {
                         tileDumped = true
-                        if let data = try? JSONSerialization.data(withJSONObject: tile, options: [.sortedKeys]),
-                           let str = String(data: data, encoding: .utf8) {
-                            tubeLog.notice("parseSubscribedChannels first tileRenderer JSON: \(String(str.prefix(2000)), privacy: .public)")
-                        }
+                        tubeLog.notice("parseSubscribedChannels tileRenderer detected")
                     }
                     if let channel = channelFromTile(tile) {
                         if seen.insert(channel.id).inserted {

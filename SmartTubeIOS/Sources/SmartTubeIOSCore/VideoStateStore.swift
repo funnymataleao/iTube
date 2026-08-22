@@ -78,6 +78,13 @@ public actor VideoStateStore: UserDefaultsBackedStore {
         persist()
     }
 
+    /// Removes every locally saved playback position and synchronizes the empty
+    /// state to iCloud when synchronization is enabled.
+    public func clearAll() {
+        states = [:]
+        persist()
+    }
+
     // MARK: - UserDefaultsBackedStore
 
     func encodedValue() -> [String: State] { states }

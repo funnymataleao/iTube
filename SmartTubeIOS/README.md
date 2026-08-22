@@ -1,4 +1,4 @@
-# SmartTube
+# iTube shared package
 
 A native Swift/SwiftUI YouTube client for **iPhone**, **iPad**, **macOS**, and **Apple TV**.
 
@@ -90,12 +90,12 @@ SmartTubeIOS/
 ### 1. Open in Xcode
 
 ```bash
-git clone https://github.com/milika/SmartTubeIOS
-cd SmartTubeIOS
+git clone https://github.com/funnymataleao/iTube
+cd iTube
 open SmartTube.xcworkspace
 ```
 
-Select the **SmartTube** scheme and run on a simulator or device.
+Select the **iTube** scheme and run on a simulator or device.
 
 ### 2. Authentication
 

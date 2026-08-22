@@ -10,13 +10,15 @@ extension AuthService {
         let expiry = tokenExpiry
         let name = accountName
         let avatar = accountAvatarURL
+        let pageId = accountPageId
         Task {
             await tokenManager.setToken(
                 access: access,
                 refresh: refresh,
                 expiry: expiry,
                 accountName: name,
-                avatarURL: avatar
+                avatarURL: avatar,
+                pageId: pageId
             )
         }
     }
@@ -28,6 +30,7 @@ extension AuthService {
         tokenExpiry      = snap.tokenExpiry
         accountName      = snap.accountName
         accountAvatarURL = snap.accountAvatarURL
+        accountPageId    = snap.pageId
         sapisid          = snap.sapisid
         // If the stored access token has already expired, clear it so that
         // view observers (e.g. HomeView.task(id: auth.accessToken)) don't fire
@@ -51,4 +54,3 @@ extension AuthService {
         Task { await tokenManager.clearToken() }
     }
 }
-

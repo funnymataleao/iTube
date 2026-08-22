@@ -1,4 +1,4 @@
-// content.js — SmartTube Safari Extension
+// content.js — iTube Safari Extension
 //
 // Detects YouTube watch/shorts URLs and sends the video ID to the background
 // service worker, which navigates the tab to smarttube://video/<id> via

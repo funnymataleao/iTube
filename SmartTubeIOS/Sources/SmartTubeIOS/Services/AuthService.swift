@@ -33,6 +33,8 @@ public final class AuthService {
     public internal(set) var isSignedIn: Bool = false
     public internal(set) var accountName: String?
     public internal(set) var accountAvatarURL: URL?
+    /// Page ID for the selected YouTube channel/Brand Account identity.
+    public internal(set) var accountPageId: String?
     public var error: Error?
 
     /// Non-nil while waiting for the user to enter the code at youtube.com/activate.
@@ -105,7 +107,7 @@ public final class AuthService {
         }
         // If already signed in but no account info (e.g. stored before the
         // fetchUserInfo fix), refresh it silently in the background.
-        if isSignedIn && accountName == nil {
+        if isSignedIn && (accountName == nil || accountPageId == nil) {
             Task {
                 do { try await fetchUserInfo() }
                 catch { authLog.error("fetchUserInfo on init failed: \(String(describing: error))") }
@@ -143,13 +145,13 @@ public final class AuthService {
         authLog.notice("beginSignIn() — fetching credentials…")
 
         let creds = await credentialsFetcher.credentials()
-        authLog.notice("Using clientId: \(creds.clientId)")
+        authLog.notice("Resolved client credentials for device authorization")
 
         do {
             let deviceResponse = try await retryWithBackoff { [self] in
                 try await requestDeviceCode(creds: creds)
             }
-            authLog.notice("✅ Got device code. userCode=\(deviceResponse.userCode) expiresIn=\(deviceResponse.expiresIn)s interval=\(deviceResponse.interval)s")
+            authLog.notice("✅ Got device code. expiresIn=\(deviceResponse.expiresIn)s interval=\(deviceResponse.interval)s")
             let expiresAt = Date().addingTimeInterval(TimeInterval(deviceResponse.expiresIn))
             let fallbackURL = URL(string: "https://yt.be/activate") ?? URL(string: "https://youtube.com/activate")!
             let verURL = URL(string: deviceResponse.verificationURL) ?? fallbackURL
@@ -217,19 +219,50 @@ public final class AuthService {
     }
 
     public func signOut() {
+        let tokenToRevoke = refreshToken ?? accessToken
         pollTask?.cancel()
         pollTask = nil
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
         accessToken      = nil
         sapisid          = nil
+        gaiaId           = nil
         refreshToken     = nil
         tokenExpiry      = nil
         accountName      = nil
         accountAvatarURL = nil
+        accountPageId    = nil
         isSignedIn       = false
         pendingActivation = nil
         clearKeychain()
+        clearYouTubeSessionCookies()
+        if let tokenToRevoke, !tokenToRevoke.isEmpty {
+            Task { await Self.revokeGoogleToken(tokenToRevoke) }
+        }
+    }
+
+    /// Disconnects the grant as well as clearing local credentials. This is a
+    /// best-effort privacy operation: local sign-out must still complete when
+    /// the network is unavailable.
+    private static func revokeGoogleToken(_ token: String) async {
+        guard let url = URL(string: "https://oauth2.googleapis.com/revoke") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "token", value: token)]
+        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                authLog.error("Google token revocation returned a non-success response")
+                return
+            }
+            authLog.notice("Google account grant revoked")
+        } catch {
+            authLog.error("Google token revocation failed")
+        }
     }
 
     /// Clears the in-memory auth session without touching the keychain.
@@ -242,10 +275,12 @@ public final class AuthService {
         tokenRefreshTask = nil
         accessToken      = nil
         sapisid          = nil
+        gaiaId           = nil
         refreshToken     = nil
         tokenExpiry      = nil
         accountName      = nil
         accountAvatarURL = nil
+        accountPageId    = nil
         isSignedIn       = false
         pendingActivation = nil
     }
@@ -279,6 +314,36 @@ public final class AuthService {
         #else
         authLog.notice("[clearAllForTest] cleared in-memory + keychain + HTTPCookieStorage (no WebKit on this platform)")
         #endif
+    }
+
+    /// Removes the app-local YouTube/Google web session on a real sign-out.
+    /// Without this, the IFrame players can remain signed in (including Premium)
+    /// after the OAuth state has been cleared, which is not a genuine guest mode.
+    private func clearYouTubeSessionCookies() {
+        if let cookies = HTTPCookieStorage.shared.cookies {
+            for cookie in cookies where Self.isYouTubeSessionCookie(cookie) {
+                HTTPCookieStorage.shared.deleteCookie(cookie)
+            }
+        }
+
+        #if canImport(WebKit)
+        let cookieStore = WKWebsiteDataStore.default().httpCookieStore
+        cookieStore.getAllCookies { cookies in
+            let matching = cookies.filter(Self.isYouTubeSessionCookie)
+            for cookie in matching {
+                cookieStore.delete(cookie)
+            }
+            authLog.notice("[signOut] removed \(matching.count) YouTube/Google WKWebView cookies")
+        }
+        #endif
+    }
+
+    nonisolated private static func isYouTubeSessionCookie(_ cookie: HTTPCookie) -> Bool {
+        let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return domain == "youtube.com"
+            || domain.hasSuffix(".youtube.com")
+            || domain == "google.com"
+            || domain.hasSuffix(".google.com")
     }
 
     /// Returns a valid access token, refreshing if necessary.

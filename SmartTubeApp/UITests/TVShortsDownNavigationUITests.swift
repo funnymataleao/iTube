@@ -9,7 +9,7 @@ import XCTest
 //   tab-bar  →(↓1)→  chip-bar  →(↓2)→  shorts-row  →(↓3)→  video-grid
 //
 // Run:
-//   xcodebuild test -workspace SmartTube.xcworkspace -scheme "Smart Tube" \
+//   xcodebuild test -workspace SmartTube.xcworkspace -scheme iTube \
 //     -destination "id=<simulator-udid>" \
 //     -only-testing:SmartTubeTVUITests/TVShortsDownNavigationUITests
 
@@ -127,4 +127,3 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 #endif
-

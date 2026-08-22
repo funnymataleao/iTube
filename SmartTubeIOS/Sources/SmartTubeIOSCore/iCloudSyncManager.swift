@@ -41,6 +41,8 @@ public actor iCloudSyncManager {
     // MARK: - Storage
 
     private let kvStore = NSUbiquitousKeyValueStore.default
+    private var identityObserver: NSObjectProtocol?
+    private var externalChangeObserver: NSObjectProtocol?
 
     // MARK: - External change stream
 
@@ -61,16 +63,17 @@ public actor iCloudSyncManager {
     /// with SyncedDefaults Code=8888 "No account" — guard against this so the error
     /// does not pollute device logs.
     public func start() {
-        guard FileManager.default.ubiquityIdentityToken != nil else {
-            // No iCloud account on this device — register for identity changes so we
-            // can start syncing if the user signs in while the app is running.
-            NotificationCenter.default.addObserver(
+        if identityObserver == nil {
+            identityObserver = NotificationCenter.default.addObserver(
                 forName: NSNotification.Name.NSUbiquityIdentityDidChange,
                 object: nil,
                 queue: nil
             ) { [weak self] _ in
                 Task { await self?.handleIdentityChange() }
             }
+        }
+
+        guard FileManager.default.ubiquityIdentityToken != nil else {
             return
         }
         startSync()
@@ -103,10 +106,11 @@ public actor iCloudSyncManager {
 
     private func startSync() {
         kvStore.synchronize()
+        guard externalChangeObserver == nil else { return }
         // Use the callback-based observer so the non-Sendable Notification.userInfo
         // is consumed synchronously (before any actor crossing). Only the extracted
         // [String] — a Sendable type — crosses into the actor via the Task.
-        NotificationCenter.default.addObserver(
+        externalChangeObserver = NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: nil,
             queue: nil
@@ -119,12 +123,6 @@ public actor iCloudSyncManager {
 
     private func handleIdentityChange() {
         guard FileManager.default.ubiquityIdentityToken != nil else { return }
-        // Account became available — remove the identity-change observer and start sync.
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSNotification.Name.NSUbiquityIdentityDidChange,
-            object: nil
-        )
         startSync()
     }
 

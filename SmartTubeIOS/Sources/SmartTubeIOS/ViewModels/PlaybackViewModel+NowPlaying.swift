@@ -72,6 +72,13 @@ extension PlaybackViewModel {
     }
 
     func setupRemoteCommandCenter() {
+        #if os(tvOS)
+        // AVPlayerViewController owns Siri Remote commands on tvOS. Registering a
+        // second MPRemoteCommandCenter handler can feed a pause command back into
+        // the same AVPlayer shortly after AVKit starts playback.
+        playerLog.notice("[tvOS] AVKit owns remote commands — skipping custom MPRemoteCommandCenter registration")
+        return
+        #else
         let center = MPRemoteCommandCenter.shared()
         // Remove any existing targets first so this function is safe to call
         // multiple times (e.g. early in loadAsync AND at readyToPlay) without
@@ -131,9 +138,15 @@ extension PlaybackViewModel {
             Task { @MainActor [weak self] in self?.playPrevious() }
             return .success
         }
+        #endif
     }
 
     func updateNowPlayingInfo() {
+        #if os(tvOS)
+        // TVSystemPlayerView supplies AVPlayerItem.externalMetadata. AVKit warns
+        // against writing MPNowPlayingInfoCenter directly from tvOS clients.
+        return
+        #else
         let video = playerInfo?.video ?? currentVideo
         guard let video else {
             nowPlayingInfoCache = [:]
@@ -192,19 +205,24 @@ extension PlaybackViewModel {
         center.previousTrackCommand.isEnabled = hasPrevious
 
         setNowPlayingInfo(nowPlayingInfoCache)
+        #endif
     }
 
     func updateNowPlayingPlayback() {
+        #if !os(tvOS)
         nowPlayingInfoCache[MPNowPlayingInfoPropertyElapsedPlaybackTime] = NSNumber(value: currentTime)
         nowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] = NSNumber(value: isPlaying ? Double(player.rate) : 0.0)
         setNowPlayingInfo(nowPlayingInfoCache)
+        #endif
     }
 
     func clearNowPlayingInfo() {
         cachedArtwork = nil
         cachedArtworkVideoID = nil
         nowPlayingInfoCache = [:]
+        #if !os(tvOS)
         setNowPlayingInfo(nil)
+        #endif
     }
 
     /// Writes to `MPNowPlayingInfoCenter` directly on `@MainActor` (= main thread).
@@ -214,7 +232,9 @@ extension PlaybackViewModel {
     /// Since every caller is already @MainActor-isolated this call is always
     /// synchronous on the main thread.
     private func setNowPlayingInfo(_ info: [String: Any]?) {
+        #if !os(tvOS)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        #endif
     }
 }
 #endif

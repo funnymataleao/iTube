@@ -19,6 +19,39 @@ extension InnerTubeAPI {
         parseVideoGroupRows(from: json)
     }
 
+    /// The response does not guarantee the thumbnail array's ordering. Choose the
+    /// largest advertised image instead of assuming the final item is the sharpest.
+    /// Returns: (largestURL, allURLsSortedBySize)
+    private func parseThumbnails(from sources: [[String: Any]]?) -> (largest: URL?, candidates: [URL]) {
+        guard let sources else { return (nil, []) }
+
+        // Parse all thumbnails with their sizes
+        var thumbnails: [(url: URL, pixelCount: Int, width: Int, height: Int)] = []
+        for source in sources {
+            guard let rawURL = source["url"] as? String,
+                  let url = URL(string: rawURL) else { continue }
+
+            let width = (source["width"] as? Int) ?? (source["width"] as? NSNumber)?.intValue ?? 0
+            let height = (source["height"] as? Int) ?? (source["height"] as? NSNumber)?.intValue ?? 0
+            let pixelCount = width * height
+
+            thumbnails.append((url: url, pixelCount: pixelCount, width: width, height: height))
+        }
+
+        // Sort by size (largest first)
+        thumbnails.sort { $0.pixelCount > $1.pixelCount }
+
+        let allCandidates = thumbnails.map { $0.url }
+        let largest = allCandidates.first
+
+        return (largest, allCandidates)
+    }
+
+    /// Legacy helper for backward compatibility - returns only the largest thumbnail
+    private func largestThumbnailURL(from sources: [[String: Any]]?) -> URL? {
+        return parseThumbnails(from: sources).largest
+    }
+
     // MARK: - Multi-shelf home row parser
 
     /// Walks the JSON looking for `richShelfRenderer` sections (YouTube home feed).
@@ -26,7 +59,12 @@ extension InnerTubeAPI {
     /// If no shelves are found, falls back to the flat parser.
     func parseVideoGroupRows(from json: [String: Any]) -> [VideoGroup] {
         var rows: [VideoGroup] = []
-        var continuationToken: String? = nil
+        var feedContinuationToken: String? = nil
+
+        // 🔍 DIAGNOSTIC: Track all renderer types encountered
+        var encountereredRendererTypes: [String: Int] = [:]
+        var processedRendererTypes: [String: Int] = [:]
+        var skippedRendererTypes: [String: Int] = [:]
 
         // Renderer keys that are known ad/promoted slots — skip silently.
         let adRendererKeys: Set<String> = [
@@ -49,7 +87,13 @@ extension InnerTubeAPI {
             }
             var videos: [Video] = []
             if let dict = obj as? [String: Any] {
-                if let vr = dict["videoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
+                if let tile = dict["tileRenderer"] as? [String: Any], let v = parseTileRenderer(tile) {
+                    videos.append(v)
+                } else if let vr = dict["videoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
+                    videos.append(v)
+                } else if let vr = dict["gridVideoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
+                    videos.append(v)
+                } else if let vr = dict["compactVideoRenderer"] as? [String: Any], let v = parseVideoRenderer(vr) {
                     videos.append(v)
                 } else if let ri = dict["richItemRenderer"] as? [String: Any],
                           let content = ri["content"] as? [String: Any] {
@@ -84,25 +128,152 @@ extension InnerTubeAPI {
             return videos
         }
 
+        func rendererTitle(_ renderer: [String: Any]) -> String? {
+            func nestedTitle(in obj: Any, depth: Int = 0) -> String? {
+                guard depth < 10 else { return nil }
+                if let dict = obj as? [String: Any] {
+                    if let title = dict["title"] as? String {
+                        return title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    if let title = dict["title"] as? [String: Any],
+                       let text = extractText(title) {
+                        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    for value in dict.values {
+                        if let title = nestedTitle(in: value, depth: depth + 1) { return title }
+                    }
+                } else if let array = obj as? [Any] {
+                    for value in array {
+                        if let title = nestedTitle(in: value, depth: depth + 1) { return title }
+                    }
+                }
+                return nil
+            }
+
+            if let title = renderer["title"] as? String {
+                return title.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let title = renderer["title"] as? [String: Any], let text = extractText(title) {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            // Authenticated TVHTML5 shelves expose their visible heading at:
+            // headerRenderer.shelfHeaderRenderer.avatarLockup
+            //   .avatarLockupRenderer.title
+            if let headerRenderer = renderer["headerRenderer"] as? [String: Any],
+               let title = nestedTitle(in: headerRenderer) {
+                return title
+            }
+            if let header = renderer["header"] as? [String: Any] {
+                if let text = extractSectionTitle(from: header) {
+                    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                for value in header.values {
+                    if let value = value as? [String: Any],
+                       let title = value["title"] as? [String: Any],
+                       let text = extractText(title) {
+                        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+            }
+            return nil
+        }
+
+        func displayShelfTitle(_ rawTitle: String?) -> String? {
+            guard let title = rawTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty else { return nil }
+            // TVHTML5 labels the structural root shelf "Home". It is not a
+            // personalized shelf title and must never be shown as a feed heading.
+            let structuralTitles = ["home", "главная"]
+            return structuralTitles.contains(title.lowercased()) ? nil : title
+        }
+
+        func findContinuation(in obj: Any, depth: Int = 0) -> String? {
+            guard depth < 50 else { return nil }
+            if let dict = obj as? [String: Any] {
+                if let token = (dict["continuationCommand"] as? [String: Any])?["token"] as? String {
+                    return token
+                }
+                if let token = (dict["nextContinuationData"] as? [String: Any])?["continuation"] as? String {
+                    return token
+                }
+                for value in dict.values {
+                    if let token = findContinuation(in: value, depth: depth + 1) { return token }
+                }
+            } else if let array = obj as? [Any] {
+                for value in array {
+                    if let token = findContinuation(in: value, depth: depth + 1) { return token }
+                }
+            }
+            return nil
+        }
+
         func walk(_ obj: Any, depth: Int = 0) {
             guard depth < 50 else {
                 tubeLog.warning("parseHomeSections: walk depth limit (50) reached — skipping subtree")
                 return
             }
             if let dict = obj as? [String: Any] {
+                // 🔍 DIAGNOSTIC: Track all renderer keys at top level
+                for key in dict.keys where key.hasSuffix("Renderer") {
+                    encountereredRendererTypes[key, default: 0] += 1
+                }
+
+                // This continuation belongs to the vertical Home feed and returns
+                // more Google-ranked shelves. Shelf-level horizontal continuations
+                // must not replace it, otherwise the Home feed turns into one long row.
+                if let sectionList = dict["sectionListRenderer"] as? [String: Any] {
+                    if let token = findContinuation(in: sectionList["continuations"] as Any) {
+                        feedContinuationToken = token
+                    }
+                    walk(sectionList["contents"] as Any, depth: depth + 1)
+                    return
+                }
+                if let continuation = dict["sectionListContinuation"] as? [String: Any] {
+                    if let token = findContinuation(in: continuation["continuations"] as Any) {
+                        feedContinuationToken = token
+                    }
+                    walk(continuation["contents"] as Any, depth: depth + 1)
+                    return
+                }
                 if let shelf = dict["richShelfRenderer"] as? [String: Any] {
-                    let title = (shelf["title"] as? [String: Any]).flatMap { extractText($0) }
+                    processedRendererTypes["richShelfRenderer", default: 0] += 1
+                    let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["contents"] as Any)
                     if !videos.isEmpty {
-                        rows.append(VideoGroup(title: title, videos: videos, layout: .row))
+                        rows.append(VideoGroup(
+                            title: title,
+                            videos: videos,
+                            rowContinuationToken: findContinuation(in: shelf["contents"] as Any),
+                            layout: .row
+                        ))
                     }
                     return
                 }
                 if let shelf = dict["reelShelfRenderer"] as? [String: Any] {
-                    let title = (shelf["title"] as? [String: Any]).flatMap { extractText($0) }
+                    processedRendererTypes["reelShelfRenderer", default: 0] += 1
+                    let title = displayShelfTitle(rendererTitle(shelf))
                     let videos = walkShelfContents(shelf["items"] as Any)
                     if !videos.isEmpty {
-                        rows.append(VideoGroup(title: title, videos: videos, layout: .row))
+                        rows.append(VideoGroup(
+                            title: title,
+                            videos: videos,
+                            rowContinuationToken: findContinuation(in: shelf["items"] as Any),
+                            layout: .row
+                        ))
+                    }
+                    return
+                }
+                if let shelf = dict["shelfRenderer"] as? [String: Any] {
+                    processedRendererTypes["shelfRenderer", default: 0] += 1
+                    let title = displayShelfTitle(rendererTitle(shelf))
+                    let videos = walkShelfContents(shelf["content"] as Any)
+                    if !videos.isEmpty {
+                        rows.append(VideoGroup(
+                            title: title,
+                            videos: videos,
+                            rowContinuationToken: findContinuation(in: shelf["content"] as Any),
+                            layout: .row
+                        ))
                     }
                     return
                 }
@@ -110,7 +281,7 @@ extension InnerTubeAPI {
                    let contEndpoint = contItem["continuationEndpoint"] as? [String: Any],
                    let contCmd = contEndpoint["continuationCommand"] as? [String: Any],
                    let ct = contCmd["token"] as? String {
-                    continuationToken = ct
+                    feedContinuationToken = ct
                     return
                 }
                 // Log any richSectionRenderer whose inner content is not a richShelfRenderer
@@ -121,8 +292,14 @@ extension InnerTubeAPI {
                     let isAd = contentKeys.contains(where: { adRendererKeys.contains($0) })
                     if isAd {
                         tubeLog.debug("walk: skipping ad richSectionRenderer content keys=\(contentKeys, privacy: .public)")
+                        for key in contentKeys where key.hasSuffix("Renderer") {
+                            skippedRendererTypes[key, default: 0] += 1
+                        }
                     } else if !contentKeys.contains("richShelfRenderer") {
                         tubeLog.notice("walk: unrecognised richSectionRenderer — add key to adRendererKeys if it is an ad\nkeys=\(contentKeys, privacy: .public)\nJSON=\(dumpJSON(content), privacy: .public)")
+                        for key in contentKeys where key.hasSuffix("Renderer") {
+                            skippedRendererTypes[key, default: 0] += 1
+                        }
                         for value in dict.values { walk(value, depth: depth + 1) }
                     } else {
                         for value in dict.values { walk(value, depth: depth + 1) }
@@ -137,12 +314,27 @@ extension InnerTubeAPI {
 
         walk(json)
 
+        // 🔍 DIAGNOSTIC: Log renderer type statistics (stdout for devicectl)
+        print("📊 RENDERER DIAGNOSTIC:")
+        print("📊 Encountered renderer types: \(encountereredRendererTypes)")
+        print("📊 Processed renderer types: \(processedRendererTypes)")
+        print("📊 Skipped renderer types: \(skippedRendererTypes)")
+
+        let unprocessedTypes = encountereredRendererTypes.filter { key, _ in
+            !processedRendererTypes.keys.contains(key) && !skippedRendererTypes.keys.contains(key)
+        }
+        if !unprocessedTypes.isEmpty {
+            print("📊 ⚠️ UNPROCESSED renderer types (might contain shelves): \(unprocessedTypes)")
+        }
+
+        print("📊 Feed continuation token: \(feedContinuationToken != nil ? "PRESENT" : "NONE")")
+
         if rows.isEmpty {
             // No shelves found — fall back to flat parse
             if let flat = try? parseVideoGroup(from: json, title: BrowseSection.SectionType.home.defaultTitle) {
                 return [flat]
             }
-        } else if let token = continuationToken {
+        } else if let token = feedContinuationToken {
             // Attach continuation to the last row so BrowseViewModel can paginate
             rows[rows.count - 1].nextPageToken = token
         }
@@ -160,6 +352,7 @@ extension InnerTubeAPI {
         // like "Today", "Yesterday", "This week" that is the closest available date
         // when the tile metadata lines contain no relative date string.
         var currentSectionDate: Date? = nil
+        var currentSectionTitle: String? = nil
         // Diagnostic counters for unknown/skipped renderers — logged at the end.
         var rendererHits: [String: Int] = [:]
         var rendererMisses: [String: Int] = [:]
@@ -246,13 +439,16 @@ extension InnerTubeAPI {
                 // and apply it as a fallback publishedAt for tiles with no explicit date.
                 if let sectionRenderer = dict["itemSectionRenderer"] as? [String: Any] {
                     let prevDate = currentSectionDate
+                    let prevTitle = currentSectionTitle
                     if let header = sectionRenderer["header"] as? [String: Any] {
                         let headerTitle = extractSectionTitle(from: header)
+                        currentSectionTitle = headerTitle
                         currentSectionDate = headerTitle.flatMap { parseSectionDate($0) }
                         tubeLog.debug("parseVideoGroup: section '\(headerTitle ?? "nil", privacy: .public)' → date=\(currentSectionDate != nil ? "yes" : "nil", privacy: .public)")
                     }
                     walk(sectionRenderer["contents"] as Any, depth: depth + 1)
                     currentSectionDate = prevDate
+                    currentSectionTitle = prevTitle
                     return
                 }
 
@@ -260,6 +456,9 @@ extension InnerTubeAPI {
                     // TVHTML5 client (subs, history, home) — Android ItemWrapper.tileRenderer
                     if var v = parseTileRenderer(renderer) {
                         if v.publishedAt == nil { v.publishedAt = currentSectionDate }
+                        if v.publishedTimeText?.isEmpty != false {
+                            v.publishedTimeText = currentSectionTitle
+                        }
                         videos.append(v)
                         rendererHits["tileRenderer", default: 0] += 1
                     } else {
@@ -473,7 +672,7 @@ extension InnerTubeAPI {
         // thumbnail: header.tileHeaderRenderer.thumbnail.thumbnails — Android: TileItem.getThumbnails()
         let tileHeader = (tile["header"] as? [String: Any])?["tileHeaderRenderer"] as? [String: Any]
         let thumbnails = (tileHeader?["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         // duration: header.tileHeaderRenderer.thumbnailOverlays[].thumbnailOverlayTimeStatusRenderer.text
         // Android: TileItem.getBadgeText()
@@ -706,7 +905,7 @@ extension InnerTubeAPI {
         // thumbnail: contentImage.thumbnailViewModel.image.thumbnails
         let thumbVM = (lockup["contentImage"] as? [String: Any])?["thumbnailViewModel"] as? [String: Any]
         let thumbnails = (thumbVM?["image"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         // isShort: only one signal currently (reelWatchEndpoint) — unlike parseVideoRenderer's
         // four signals. GitHub #41 ("Hide Shorts" still leaking through in Home/Subscriptions,
@@ -736,17 +935,17 @@ extension InnerTubeAPI {
             }
         }
 
-        let publishedAt: Date? = {
+        let publishedMetadata: (date: Date?, text: String?) = {
             for row in metaRows.dropFirst() {
                 guard let parts = row["metadataParts"] as? [[String: Any]] else { continue }
                 for part in parts {
                     guard let text = part["text"] as? [String: Any],
                           let str = text["content"] as? String ?? extractText(text)
                     else { continue }
-                    if let date = parseRelativeDate(str) { return date }
+                    if let date = parseRelativeDate(str) { return (date, str) }
                 }
             }
-            return nil
+            return (nil, nil)
         }()
 
         return Video(
@@ -766,7 +965,8 @@ extension InnerTubeAPI {
                 }
                 return nil
             }(),
-            publishedAt: publishedAt,
+            publishedAt: publishedMetadata.date,
+            publishedTimeText: publishedMetadata.text,
             isLive: false, isShort: isShort, badges: []
         )
     }
@@ -776,7 +976,7 @@ extension InnerTubeAPI {
         guard let videoId = r["videoId"] as? String else { return nil }
         let title = (r["headline"] as? [String: Any]).flatMap { extractText($0) } ?? ""
         let thumbnails = (r["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         // channelTitle: ownerText or shortBylineText — for collab videos YouTube
         // renders multiple runs ("Inequality Media and Robert Reich"). Take only the
@@ -840,7 +1040,7 @@ extension InnerTubeAPI {
         }()
 
         let thumbnails = (r["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let (thumbURL, thumbCandidates) = parseThumbnails(from: thumbnails)
 
         // duration: lengthText (videoRenderer) or thumbnailOverlays[N].thumbnailOverlayTimeStatusRenderer.text (gridVideoRenderer)
         let lengthText: String? = (r["lengthText"] as? [String: Any]).flatMap { extractText($0) }
@@ -949,6 +1149,7 @@ extension InnerTubeAPI {
             channelTitle: channelTitle,
             channelId: channelId,
             thumbnailURL: thumbURL,
+            thumbnailCandidates: thumbCandidates.isEmpty ? nil : thumbCandidates,
             duration: duration,
             viewCount: viewCount,
             publishedAt: publishedAt,
@@ -987,7 +1188,7 @@ extension InnerTubeAPI {
         }()
 
         let thumbnails = (r["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-        let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+        let thumbURL = largestThumbnailURL(from: thumbnails)
 
         let lengthText = (r["lengthText"] as? [String: Any]).flatMap { extractText($0) }
         let duration = lengthText.flatMap { parseDuration($0) }
@@ -1063,8 +1264,8 @@ extension InnerTubeAPI {
     //   videoId:   onTap.innertubeCommand.reelWatchEndpoint.videoId
     //   title:     overlayMetadata.primaryText.content
     //   viewCount: overlayMetadata.secondaryText.content  (e.g. "3.3K views")
-    //   thumbnail: onTap.innertubeCommand.reelWatchEndpoint.thumbnail.thumbnails[-1].url
-    //              or thumbnailViewModel.image.sources[-1].url as fallback
+    //   thumbnail: largest URL in reelWatchEndpoint.thumbnail.thumbnails
+    //              or thumbnailViewModel.image.sources as fallback
     private func parseShortsLockupViewModel(_ r: [String: Any]) -> Video? {
         // videoId — from reelWatchEndpoint inside onTap.innertubeCommand
         guard let onTap = r["onTap"] as? [String: Any],
@@ -1092,19 +1293,19 @@ extension InnerTubeAPI {
             return extractNumber(content)
         }()
 
-        // thumbnail — reelWatchEndpoint.thumbnail.thumbnails[-1] preferred; thumbnailViewModel fallback
+        // thumbnail — highest-resolution reelWatchEndpoint asset preferred; thumbnailViewModel fallback
         let thumbURL: URL? = {
             if let thumbDict = reelEp["thumbnail"] as? [String: Any],
                let thumbs = thumbDict["thumbnails"] as? [[String: Any]],
-               let urlStr = thumbs.last?["url"] as? String {
-                return URL(string: urlStr)
+               let url = largestThumbnailURL(from: thumbs) {
+                return url
             }
-            // Fallback: thumbnailViewModel.image.sources[-1].url
+            // Fallback: highest-resolution thumbnailViewModel image source.
             if let tvm = r["thumbnailViewModel"] as? [String: Any],
                let image = tvm["image"] as? [String: Any],
                let sources = image["sources"] as? [[String: Any]],
-               let urlStr = sources.last?["url"] as? String {
-                return URL(string: urlStr)
+               let url = largestThumbnailURL(from: sources) {
+                return url
             }
             return nil
         }()
@@ -1128,4 +1329,3 @@ extension InnerTubeAPI {
         )
     }
 }
-

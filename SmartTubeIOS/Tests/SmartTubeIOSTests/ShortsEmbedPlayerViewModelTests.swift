@@ -63,6 +63,7 @@ struct ShortsEmbedPlayerViewModelTests {
     @Test("checkSponsorSkip auto-skips a sponsor segment and records a pending skip log")
     func checkSponsorSkipAutoSkipsSponsorSegment() {
         let vm = ShortsEmbedPlayerViewModel(api: InnerTubeAPI())
+        vm.sponsorBlockAuthToken = "test-token"
         vm.duration = 60
         vm.sponsorSegments = [SponsorSegment(start: 5, end: 10, category: .sponsor)]
 
@@ -77,12 +78,50 @@ struct ShortsEmbedPlayerViewModelTests {
     @Test("checkSponsorSkip shows a toast for an intro segment instead of skipping")
     func checkSponsorSkipShowsToastForIntroSegment() {
         let vm = ShortsEmbedPlayerViewModel(api: InnerTubeAPI())
+        vm.sponsorBlockAuthToken = "test-token"
         vm.duration = 60
         vm.sponsorSegments = [SponsorSegment(start: 5, end: 10, category: .intro)]
 
         vm.checkSponsorSkip(at: 6)
 
         #expect(vm.currentToastSegment?.category == .intro)
+        #expect(vm.activeSkipEnd == nil)
+        #expect(vm.pendingSkipLog == nil)
+    }
+
+    @Test("Guest playback never skips self-promotion even when the saved preference is enabled")
+    func guestPlaybackDoesNotSkipSelfPromotion() {
+        let vm = ShortsEmbedPlayerViewModel(api: InnerTubeAPI())
+        var settings = AppSettings()
+        settings.sponsorBlockEnabled = true
+        settings.sponsorBlockActions[.selfPromo] = .skip
+        vm.updateSettings(settings)
+        vm.duration = 60
+        vm.sponsorSegments = [SponsorSegment(start: 5, end: 10, category: .selfPromo)]
+
+        vm.checkSponsorSkip(at: 6)
+
+        #expect(vm.activeSkipEnd == nil)
+        #expect(vm.currentToastSegment == nil)
+        #expect(vm.pendingSkipLog == nil)
+    }
+
+    @Test("Signing out immediately clears SponsorBlock state")
+    func signingOutClearsSponsorBlockState() {
+        let vm = ShortsEmbedPlayerViewModel(api: InnerTubeAPI())
+        vm.sponsorBlockAuthToken = "test-token"
+        let segment = SponsorSegment(start: 5, end: 10, category: .selfPromo)
+        vm.sponsorSegments = [segment]
+        vm.currentToastSegment = segment
+        vm.activeSkipEnd = 10
+        vm.pendingSkipLog = PendingSkipLog(
+            category: .selfPromo, segmentStart: 5, segmentEnd: 10, beforeTime: 6, targetTime: 10
+        )
+
+        vm.updateAuthToken(nil)
+
+        #expect(vm.sponsorSegments.isEmpty)
+        #expect(vm.currentToastSegment == nil)
         #expect(vm.activeSkipEnd == nil)
         #expect(vm.pendingSkipLog == nil)
     }

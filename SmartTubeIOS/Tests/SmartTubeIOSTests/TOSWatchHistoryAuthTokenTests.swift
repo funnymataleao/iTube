@@ -70,5 +70,38 @@ struct TOSWatchHistoryAuthTokenTests {
         }
         #expect(observed == "test-sapisid-xyz")
     }
+
+    @Test("Guest TOS playback never skips creator self-promotion")
+    func guestPlaybackDoesNotSkipSelfPromotion() {
+        let vm = makeVM()
+        vm.duration = 60
+        vm.sponsorSegments = [SponsorSegment(start: 5, end: 10, category: .selfPromo)]
+
+        vm.checkSponsorSkip(at: 6)
+
+        #expect(vm.activeSkipEnd == nil)
+        #expect(vm.currentToastSegment == nil)
+        #expect(vm.pendingSkipLog == nil)
+    }
+
+    @Test("Signing out immediately clears TOS SponsorBlock state")
+    func signingOutClearsSponsorBlockState() {
+        let vm = makeVM()
+        vm.sponsorBlockAuthToken = "test-token"
+        let segment = SponsorSegment(start: 5, end: 10, category: .selfPromo)
+        vm.sponsorSegments = [segment]
+        vm.currentToastSegment = segment
+        vm.activeSkipEnd = 10
+        vm.pendingSkipLog = PendingSkipLog(
+            category: .selfPromo, segmentStart: 5, segmentEnd: 10, beforeTime: 6, targetTime: 10
+        )
+
+        vm.updateAuthToken(nil)
+
+        #expect(vm.sponsorSegments.isEmpty)
+        #expect(vm.currentToastSegment == nil)
+        #expect(vm.activeSkipEnd == nil)
+        #expect(vm.pendingSkipLog == nil)
+    }
 }
 #endif

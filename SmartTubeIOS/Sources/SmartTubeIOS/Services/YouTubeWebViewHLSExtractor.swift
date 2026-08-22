@@ -775,7 +775,7 @@ final class YouTubeWebViewHLSExtractor: NSObject {
             return
         }
 
-        extractLog.notice("✅ [webView] hlsManifestUrl extracted url=\(String(url.absoluteString.prefix(200)) as NSString)")
+        extractLog.notice("✅ [webView] HLS manifest URL extracted")
 
         // Sync youtube.com session cookies from WKWebView's httpCookieStore into
         // HTTPCookieStorage.shared NOW (page-load cookies are already set by the time

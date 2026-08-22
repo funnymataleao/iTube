@@ -63,7 +63,11 @@ public struct LibraryView: View {
         #if os(iOS) || os(tvOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
-        #if !os(iOS)
+        #if os(tvOS)
+        .fullScreenCover(item: $selectedVideo) { video in
+            PlayerView(video: video, api: api)
+        }
+        #elseif !os(iOS)
         .navigationDestination(item: $selectedVideo) { video in
             PlayerView(video: video, api: api)
         }
@@ -327,8 +331,8 @@ public struct LibraryView: View {
             Text("Sign in to see your \(selectedSection.rawValue.lowercased())")
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            NavigationLink("Sign In") {
-                SignInView()
+            NavigationLink("Open Settings") {
+                SettingsView()
             }
             .buttonStyle(.borderedProminent)
         }

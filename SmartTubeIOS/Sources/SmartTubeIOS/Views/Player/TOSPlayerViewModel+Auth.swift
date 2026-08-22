@@ -16,8 +16,37 @@ extension TOSPlayerViewModel {
     /// Propagates the auth token to this view model's own API instance so
     /// WatchtimeTracker sends authenticated watch-time pings.
     public func updateAuthToken(_ token: String?) {
-        Task { await api.setAuthToken(token) }
-        Task { await VideoPreloadCache.shared.setAuthToken(token) }
+        let effectiveToken = token.flatMap { $0.isEmpty ? nil : $0 }
+        authUpdateRevision &+= 1
+        let revision = authUpdateRevision
+        sponsorBlockAuthToken = effectiveToken
+        if effectiveToken == nil {
+            sponsorTask?.cancel()
+            sponsorTask = nil
+            sponsorSegments = []
+            currentToastSegment = nil
+            activeSkipEnd = nil
+            pendingSkipLog = nil
+            lastLoggedToastSegment = nil
+            lastLoggedNearEndSegment = nil
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.api.setAuthToken(effectiveToken)
+            guard self.authUpdateRevision == revision else {
+                let latest = self.sponsorBlockAuthToken
+                await self.api.setAuthToken(latest)
+                await VideoPreloadCache.shared.setAuthToken(latest)
+                return
+            }
+            await VideoPreloadCache.shared.setAuthToken(effectiveToken)
+            guard self.authUpdateRevision == revision else {
+                let latest = self.sponsorBlockAuthToken
+                await self.api.setAuthToken(latest)
+                await VideoPreloadCache.shared.setAuthToken(latest)
+                return
+            }
+        }
         // Any tracking URLs already fetched (or in-flight) may be stale/anonymous —
         // mirrors PlaybackViewModel+Auth.swift's BUG-016 fix.
         tracker.setTrackingURLs(nil)

@@ -23,13 +23,24 @@ let package = Package(
             url: "https://github.com/firebase/firebase-ios-sdk",
             from: "12.0.0"
         ),
-
+        .package(
+            url: "https://github.com/apple/swift-nio.git",
+            exact: "2.101.3"
+        ),
+        .package(
+            url: "https://github.com/apple/swift-nio-ssl.git",
+            exact: "2.37.2"
+        ),
     ],
     targets: [
         // MARK: Core – iOS, macOS (Foundation only)
         .target(
             name: "SmartTubeIOSCore",
-            dependencies: [],
+            dependencies: [
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
+            ],
             path: "Sources/SmartTubeIOSCore",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
@@ -38,9 +49,14 @@ let package = Package(
             name: "SmartTubeIOS",
             dependencies: [
                 "SmartTubeIOSCore",
-                .product(name: "FirebaseCrashlytics", package: "firebase-ios-sdk"),
+                .product(
+                    name: "FirebaseCrashlytics",
+                    package: "firebase-ios-sdk",
+                    condition: .when(platforms: [.iOS, .macOS])
+                ),
             ],
             path: "Sources/SmartTubeIOS",
+            exclude: ["translate_strings.py"],
             resources: [
                 .process("Localizable.xcstrings"),
                 .copy("Resources/yt.solver.lib.min.js"),

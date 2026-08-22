@@ -12,6 +12,39 @@ private let playerLog = CrashlyticsLogger(category: "Player")
 
 extension PlaybackViewModel {
 
+    private func shouldRetryPlayerWithAuthenticatedTV(after error: Error) -> Bool {
+        guard let apiError = error as? APIError else { return false }
+        switch apiError {
+        case .unavailable, .signInRequired:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Returns whether a client-specific player failure should continue through
+    /// the complete playback fallback chain instead of being surfaced immediately.
+    ///
+    /// YouTube now frequently returns cipher-only formats to the primary iOS
+    /// client. `parsePlayerInfo` reports that as `.unavailable`, but VisionOS HLS
+    /// can still be fully playable. Treating the primary client's answer as final
+    /// made every such video fail before the tvOS fallback was ever attempted.
+    private func shouldUsePlaybackFallback(after error: Error) -> Bool {
+        guard let apiError = error as? APIError else { return false }
+        switch apiError {
+        case .unavailable, .decodingError:
+            return true
+        case .httpError(403):
+            return true
+        case .signInRequired:
+            // An authenticated session can be stale. Anonymous clients may still
+            // play public content; unsigned age-restricted content still needs login.
+            return hasAuthToken
+        default:
+            return false
+        }
+    }
+
     public func load(video: Video) {
         playerLog.notice("[load] load() called — id=\(video.id) currentVideo=\(self.currentVideo?.id ?? "nil") isLoading=\(self.isLoading) player.item=\(self.player.currentItem != nil)")
         playerLog.notice("[benchmark] load started — videoId=\(video.id) title=\(video.title)")
@@ -20,6 +53,7 @@ extension PlaybackViewModel {
         timeToPlayMs = 0
         timeToHighQualityMs = 0
         cacheStatusSummary = ""
+        likeCountText = nil
         if currentVideo?.id == video.id, !isLoading {
             playerLog.notice("[load] re-opening same video \(video.id) — stop() may have deactivated AVAudioSession")
         } else if let prev = currentVideo, prev.id != video.id, !isLoading {
@@ -33,6 +67,7 @@ extension PlaybackViewModel {
             playerLog.notice("[load] already loading \(video.id) — ignoring duplicate call")
             return
         }
+        historyPlaybackStartedVideoID = nil
         CrashlyticsLogger.setVideoContext(id: video.id, title: video.title)
         // Cancel any previous in-flight load so we never have two concurrent API
         // fetches for the same (or different) video running at the same time.
@@ -146,12 +181,17 @@ extension PlaybackViewModel {
         captionsManager.reset()
         audioManager.reset()
         endCards = []
+        relatedVideos = []
+        hasNext = false
 
         // Push the currently playing video onto the history stack before switching
         if let prev = currentVideo {
             history.append(prev)
         }
         currentVideo = video
+        isInWatchLater = video.playlistId == "WL"
+        isUpdatingWatchLater = false
+        updateSubscriptionState()
         // fix236: Record the intended video at load() time so checkWrongVideoOnFirstPlay()
         // can detect if a stale task swaps currentVideo before readyToPlay fires.
         intendedVideoId = video.id
@@ -212,9 +252,37 @@ extension PlaybackViewModel {
         if video.playlistId == CurrentQueueStore.playlistID,
            let nextIndex = video.playlistIndex.map({ $0 + 1 }) {
             prefetchQueueVideo(at: nextIndex)
-            // The queue has a next item — enable the next button immediately so
-            // the user can advance before related videos finish loading.
-            hasNext = true
+            Task { [weak self] in
+                let nextExists = await CurrentQueueStore.shared.videoAt(index: nextIndex) != nil
+                guard let self,
+                      self.currentVideo?.id == video.id,
+                      self.currentVideo?.playlistIndex == video.playlistIndex else { return }
+                // Resolve against the captured collection itself. Merely having
+                // an index is not proof that another collection item exists.
+                self.hasNext = nextExists
+            }
+        }
+    }
+
+    /// Called by the AVPlayer rate observer when playback actually starts.
+    /// Local History is updated before the network ping so the UI never waits on
+    /// YouTube's stats endpoint or FEhistory propagation.
+    func recordPlaybackStartIfNeeded() {
+        guard settings.historyState == .enabled,
+              let video = currentVideo,
+              historyPlaybackStartedVideoID != video.id
+        else { return }
+
+        historyPlaybackStartedVideoID = video.id
+        Task {
+            await RecentWatchHistoryStore.shared.record(video)
+            NotificationCenter.default.post(
+                name: .watchHistoryDidChange,
+                object: nil,
+                userInfo: ["video": video]
+            )
+            await self.tracker.playbackStarted()
+            playerLog.notice("[watchtime] playback start recorded immediately for \(video.id)")
         }
     }
 
@@ -309,6 +377,7 @@ extension PlaybackViewModel {
         #if canImport(UIKit)
         UIApplication.shared.isIdleTimerDisabled = false
         updateNowPlayingPlayback()
+        #if !os(tvOS)
         // Deregister from the global command center so a suspended VM never
         // handles lock screen Play while another VM is the active player.
         let center = MPRemoteCommandCenter.shared()
@@ -320,6 +389,7 @@ extension PlaybackViewModel {
         center.changePlaybackPositionCommand.removeTarget(nil)
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
+        #endif
         #endif
     }
 
@@ -365,6 +435,15 @@ extension PlaybackViewModel {
         // completed on slow networks (GitHub issue #53).
         playerLog.notice("[loadAsync] start id=\(video.id) title=\(video.title) player.rate=\(self.player.rate) timeControlStatus=\(self.player.timeControlStatus.rawValue)")
 
+        // The stream-method probe is an explicit UI-testing contract: exercise exactly
+        // one client without allowing the normal primary race to win first. Keeping the
+        // gate here also makes fallback regressions reproducible when YouTube happens to
+        // restore the primary HLS response between two test runs.
+        if let forcedMethod = StreamMethodProbeSupport.forcedStreamMethod {
+            await probeStreamMethod(forcedMethod, video: video)
+            return
+        }
+
         #if canImport(UIKit)
         // Seed the lock-screen Now Playing widget BEFORE the ~10 s network phase so
         // the user sees the title/channel on the lock screen immediately.
@@ -381,21 +460,13 @@ extension PlaybackViewModel {
         updateNowPlayingInfo()
         #endif
 
-        // Fetch the BotGuard PO token before the primary stream attempt.
-        // Awaited (with a 2 s safety timeout) so api.hasPoToken(for:) returns true during
-        // the rqh=1 adaptive stream check in tryAllStreams — preventing an unnecessary
-        // WKWebView fallback on every cold start.
-        // BotGuardClient completes in <500 ms on first run; cached result returns in <1 ms
-        // thereafter (TTL ~12 h). The 2 s timeout is a safety net for slow networks only.
+        // Warm the BotGuard PO token without blocking the primary player request.
+        // The primary HLS path does not require this token; adaptive fallback paths
+        // can consume it if the background prefetch completes in time.
         let capturedAPI = api
         let capturedVideoId = video.id
         if !(await api.hasPoToken(for: video.id)) {
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { await capturedAPI.prefetchPoToken(for: capturedVideoId) }
-                group.addTask { try? await Task.sleep(nanoseconds: 2_000_000_000) }
-                _ = await group.next()
-                group.cancelAll()
-            }
+            Task { await capturedAPI.prefetchPoToken(for: capturedVideoId) }
         }
         #if canImport(WebKit)
         // Fire-and-forget: start WKWebView BotGuard pipeline in the background.
@@ -468,7 +539,8 @@ extension PlaybackViewModel {
                 }
                 player.replaceCurrentItem(with: item)
                 endObserverTask?.cancel()
-                endObserverTask = Task { [weak self] in
+                endObserverTask = Task { [weak self, weak item] in
+                    guard let item else { return }
                     let notifications = NotificationCenter.default.notifications(
                         named: AVPlayerItem.didPlayToEndTimeNotification,
                         object: item
@@ -479,7 +551,8 @@ extension PlaybackViewModel {
                     }
                 }
                 stallObserverTask?.cancel()
-                stallObserverTask = Task { @MainActor [weak self] in
+                stallObserverTask = Task { @MainActor [weak self, weak item] in
+                    guard let item else { return }
                     let notifications = NotificationCenter.default.notifications(
                         named: AVPlayerItem.playbackStalledNotification,
                         object: item
@@ -618,20 +691,18 @@ extension PlaybackViewModel {
                         // this is a user-side network condition, not an app bug.
                         playerLog.error("⚠️ iOS client detected IP block — reason: \(reason)")
                         throw error
-                    } else if case APIError.unavailable = error, hasAuthToken {
-                        playerLog.notice("⚠️ iOS client returned unavailable — retrying with authenticated TV client")
+                    } else if hasAuthToken, shouldRetryPlayerWithAuthenticatedTV(after: error) {
+                        playerLog.notice("⚠️ iOS client requires authentication or returned unavailable — retrying with authenticated TV client")
                         do {
                             var tvInfo = try await api.fetchPlayerInfoAuthenticated(videoId: video.id)
-                            // NW-3-FIX: TV client may return no HLS manifest and no adaptive
-                            // streams for DRM/protected or region-locked content
-                            // (hlsURL=nil, bestAdaptiveVideoURL=nil). Attempting to play the
-                            // TV muxed direct URL (itag=18, c=TVHTML5) fails with
-                            // AVFoundationErrorDomain -11828 / NSOSStatusErrorDomain -12847.
-                            // Skip the unnecessary AVPlayer attempt and go straight to the
-                            // Android client.
+                            // A TV response may contain only direct muxed MP4 (itag 18).
+                            // Keep it: `c=TVHTML5` identifies the signing client and does
+                            // not make a URL SABR. Fall through to Android only when the TV
+                            // response contains no directly playable media URL at all.
                             if tvInfo.hlsURL == nil,
-                               tvInfo.bestAdaptiveVideoURL == nil || tvInfo.bestAdaptiveAudioURL == nil {
-                                playerLog.notice("⚠️ TV client returned no HLS/adaptive streams — falling through to Android client")
+                               tvInfo.bestMuxedDownloadURL == nil,
+                               (tvInfo.bestAdaptiveVideoURL == nil || tvInfo.bestAdaptiveAudioURL == nil) {
+                                playerLog.notice("⚠️ TV client returned no direct HLS/adaptive/muxed streams — falling through to Android client")
                                 tvInfo = try await api.fetchPlayerInfoAndroid(videoId: video.id)
                             }
                             info = tvInfo
@@ -681,9 +752,10 @@ extension PlaybackViewModel {
             let channelIsExcluded = video.channelId.map {
                 settings.sponsorBlockExcludedChannels.keys.contains($0)
             } ?? false
+            let sponsorBlockIsActive = settings.sponsorBlockEnabled
             playerLog.notice("[sponsorBlock] enabled=\(settings.sponsorBlockEnabled) channelExcluded=\(channelIsExcluded) categories=\(settings.activeSponsorCategories.count)")
             var sponsorCached = false
-            if settings.sponsorBlockEnabled, !channelIsExcluded {
+            if sponsorBlockIsActive, !channelIsExcluded {
                 if let cachedSegments = cached.sponsorSegments {
                     // Cache hit (fresh or stale) — apply immediately.
                     let isStaleSponsor = cached.staleFields.contains(.sponsorSegments)
@@ -865,8 +937,8 @@ extension PlaybackViewModel {
                             // Watch for the first valid value so the scrubber is not
                             // permanently greyed out (#183).
                             self.durationObserverTask?.cancel()
-                            self.durationObserverTask = Task { [weak self, weak item] in
-                                guard let self, let item else { return }
+                            self.durationObserverTask = Task { [weak self] in
+                                guard let self else { return }
                                 for await seconds in item.firstValidDurationStream {
                                     guard !Task.isCancelled else { return }
                                     let prev = self.duration
@@ -892,21 +964,21 @@ extension PlaybackViewModel {
                         // a hint update only — no item replacement, no stutter.
                         if info.hlsURL != nil {
                             let targetMaxH = self.settings.preferredQuality.maxHeight
-                            Task { [weak self, weak item] in
+                            Task { [weak self] in
                                 try? await Task.sleep(for: .milliseconds(800))
                                 guard let self, !Task.isCancelled else { return }
                                 self.timeToHighQualityMs = Int(Date().timeIntervalSince(self.videoLoadStartedAt) * 1000)
                                 // Reset to system default so scrubbing has a comfortable
                                 // forward buffer after the first frame is on screen.
-                                item?.preferredForwardBufferDuration = 0
+                                item.preferredForwardBufferDuration = 0
                                 if let h = targetMaxH {
                                     let hf = CGFloat(h)
-                                    item?.preferredMaximumResolution = CGSize(width: hf * 4, height: hf)
-                                    item?.preferredPeakBitRate = self.peakBitRate(for: h)
+                                    item.preferredMaximumResolution = CGSize(width: hf * 4, height: hf)
+                                    item.preferredPeakBitRate = self.peakBitRate(for: h)
                                     playerLog.notice("[fast-start] ABR ramp → \(h)p + buffer unconstrained")
                                 } else {
-                                    item?.preferredMaximumResolution = .zero
-                                    item?.preferredPeakBitRate = 0
+                                    item.preferredMaximumResolution = .zero
+                                    item.preferredPeakBitRate = 0
                                     playerLog.notice("[fast-start] ABR ramp → Auto (unconstrained) + buffer unconstrained")
                                 }
                             }
@@ -1064,21 +1136,10 @@ extension PlaybackViewModel {
             // detection requires a parseable body, these arrive here as httpError(403).
             // Route them to exhaustiveRetry too — unauthenticated fallback clients may
             // succeed without the broken token. Firebase: 5f445659 (APIError(0) HTTP 403).
-            let shouldRetryWithFallback: Bool
-            if let apiErr = error as? APIError {
-                switch apiErr {
-                case .signInRequired:
-                    shouldRetryWithFallback = hasAuthToken
-                case .httpError(403):
-                    shouldRetryWithFallback = hasAuthToken
-                default:
-                    shouldRetryWithFallback = false
-                }
-            } else {
-                shouldRetryWithFallback = false
-            }
+            let shouldRetryWithFallback = shouldUsePlaybackFallback(after: error)
             if shouldRetryWithFallback {
-                playerLog.notice("⚠️ \(error.localizedDescription) from primary client (signed-in user) — routing to exhaustiveRetry for fallback clients")
+                playerLog.notice("⚠️ \(error.localizedDescription) from primary client — routing to exhaustiveRetry for fallback clients")
+                isLoading = true
                 exhaustiveRetryTask?.cancel()
                 exhaustiveRetryTask = Task { [weak self] in
                     await self?.exhaustiveRetry(video: video, originalError: error)
@@ -1183,6 +1244,7 @@ extension PlaybackViewModel {
         #if canImport(UIKit)
         UIApplication.shared.isIdleTimerDisabled = false
         clearNowPlayingInfo()
+        #if !os(tvOS)
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.removeTarget(nil)
         center.pauseCommand.removeTarget(nil)
@@ -1192,6 +1254,7 @@ extension PlaybackViewModel {
         center.changePlaybackPositionCommand.removeTarget(nil)
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
+        #endif
         #endif
         if let obs = audioSessionObserver {
             NotificationCenter.default.removeObserver(obs)
@@ -1229,16 +1292,24 @@ extension PlaybackViewModel {
                     Task(priority: .background) { [weak self] in
                         guard let self else { return }
                         let segments = await self.sponsorBlock.fetchSegments(videoId: videoId, categories: cats)
+                        guard !Task.isCancelled,
+                              self.currentVideo?.id == videoId
+                        else { return }
                         await VideoPreloadCache.shared.store(sponsorSegments: segments, for: videoId)
                     }
                 } else {
                     // Full miss — fetch now and apply.
                     var segments = await sponsorBlock.fetchSegments(videoId: videoId, categories: cats)
-                    await VideoPreloadCache.shared.store(sponsorSegments: segments, for: videoId)
-                    guard !Task.isCancelled else { return }
-                    if minDur > 0 { segments = segments.filter { ($0.end - $0.start) >= minDur } }
-                    sponsorSegments = segments
-                    playerLog.notice("[sponsorBlock] phase2 applied \(segments.count) segments for \(videoId)")
+                    if !Task.isCancelled,
+                       currentVideo?.id == videoId {
+                        await VideoPreloadCache.shared.store(sponsorSegments: segments, for: videoId)
+                        guard !Task.isCancelled,
+                              currentVideo?.id == videoId
+                        else { return }
+                        if minDur > 0 { segments = segments.filter { ($0.end - $0.start) >= minDur } }
+                        sponsorSegments = segments
+                        playerLog.notice("[sponsorBlock] phase2 applied \(segments.count) segments for \(videoId)")
+                    }
                 }
             }
         }
@@ -1287,24 +1358,23 @@ extension PlaybackViewModel {
 
         if let nextInfo, !nextInfo.relatedVideos.isEmpty {
             relatedVideos = nextInfo.relatedVideos.filter { $0.id != video.id }
-            hasNext = !relatedVideos.isEmpty
         } else {
-            let fallbackQuery = video.title.isEmpty ? nil : video.title
-            if let query = fallbackQuery {
-                let searched = try? await api.search(query: query)
-                relatedVideos = searched?.videos.filter { $0.id != video.id }.prefix(InnerTubeClients.maxVideoResults).map { $0 } ?? []
-                hasNext = !relatedVideos.isEmpty
-            }
+            // A title search is not a valid "next video" source: its first
+            // result can be unrelated and makes the control misleading.
+            relatedVideos = []
         }
-        // If the related-videos fetch resolved hasNext=false but this is a queue
-        // video that still has a subsequent item, restore hasNext=true so the
-        // next button stays enabled for queue playback.
-        if !hasNext,
-           video.playlistId == CurrentQueueStore.playlistID,
+
+        // A collection/queue is authoritative for the explicit Next button.
+        // Recommendations remain cached for end-of-playback autoplay, but they
+        // must never replace "the next item in this collection" on user action.
+        if video.playlistId == CurrentQueueStore.playlistID,
            let idx = video.playlistIndex {
             hasNext = await CurrentQueueStore.shared.videoAt(index: idx + 1) != nil
+        } else {
+            hasNext = !relatedVideos.isEmpty
         }
         if let status = nextInfo?.likeStatus { likeDislike.setLikeStatus(status) }
+        likeCountText = nextInfo?.likeCountText
         if let ch = nextInfo?.chapters, !ch.isEmpty {
             chapters = ch
             playerLog.notice("[chapters] applied \(ch.count) chapters for \(video.id)")

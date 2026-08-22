@@ -22,8 +22,20 @@ public actor InnerTubeAPI {
     // MARK: - Configuration
 
     let session: URLSession
+    /// Isolated cookie jar for anonymous player clients. Authentication attempts
+    /// can leave the shared YouTube session in a LOGIN_REQUIRED/bot-check state;
+    /// JS-less clients must be seeded from a clean watch-page session instead.
+    let anonymousPlayerSession: URLSession
+    var anonymousVisitorData: String?
+    var anonymousCookieHeader: String?
+    var anonymousPlayerAPIKey: String?
+    var anonymousWatchReferer: String?
+    var anonymousSessionSeededAt: Date?
     var visitorData: String?
     var authToken: String?
+    /// Page ID of the selected YouTube identity. Brand/channel identities need
+    /// this in X-Goog-Pageid for mutations to target the account shown in the UI.
+    var accountPageId: String?
     /// SAPISID cookie value from YouTube.com web session (set via OAuthLogin/MergeSession).
     /// Used by postWebCreator to compute SAPISIDHASH for WEB_CREATOR requests on www.youtube.com.
     var sapisid: String?
@@ -164,6 +176,19 @@ public actor InnerTubeAPI {
         ]
     ]
 
+    /// Player-only fallback matching yt-dlp's `tv_downgraded` client. Do not use
+    /// this context for browse/actions: those endpoints expect the current 7.x TV
+    /// client used by `tvClientContext`.
+    let tvDowngradedClientContext: [String: Any] = [
+        "client": [
+            "hl": "en",
+            "gl": "US",
+            "clientName": InnerTubeClients.TVDowngraded.name,
+            "clientVersion": InnerTubeClients.TVDowngraded.version,
+            "userAgent": InnerTubeClients.TVDowngraded.userAgent,
+        ]
+    ]
+
     /// The Android VR (Oculus Quest) client context used for audio-only fallback.
     /// Per yt-dlp research (May 2026), this client does not require a PO token for
     /// adaptive audio streams. Used exclusively by `fetchPlayerInfoAndroidVR`.
@@ -278,6 +303,12 @@ public actor InnerTubeAPI {
         config.timeoutIntervalForResource = 60
         config.waitsForConnectivity = true
         self.session = URLSession(configuration: config)
+        let anonymousConfig = URLSessionConfiguration.ephemeral
+        anonymousConfig.timeoutIntervalForRequest = Self.requestTimeoutInterval
+        anonymousConfig.timeoutIntervalForResource = 60
+        anonymousConfig.waitsForConnectivity = true
+        anonymousConfig.httpShouldSetCookies = true
+        self.anonymousPlayerSession = URLSession(configuration: anonymousConfig)
         self.authToken = authToken
         self.poTokenProvider = poTokenProvider
         // Start observing network path changes so visitorData is cleared on network transitions.
@@ -292,6 +323,7 @@ public actor InnerTubeAPI {
     /// Accepts a custom `URLSession` so tests can inject a mock via `URLProtocol`.
     init(authToken: String?, session: URLSession) {
         self.session = session
+        self.anonymousPlayerSession = session
         self.authToken = authToken
         self.poTokenProvider = nil
     }
@@ -306,15 +338,27 @@ public actor InnerTubeAPI {
         lastPathStatus = path.status
         guard path.status == .satisfied, prev == .satisfied else { return }
         visitorData = nil
+        anonymousVisitorData = nil
+        anonymousCookieHeader = nil
+        anonymousPlayerAPIKey = nil
+        anonymousWatchReferer = nil
+        anonymousSessionSeededAt = nil
         tubeLog.notice("visitorData cleared — network path changed (VPN/WiFi transition)")
     }
 
     // MARK: - Auth
 
     public func setAuthToken(_ token: String?) {
-        let msg = token != nil ? "token(\(token!.prefix(8))…)" : "nil"
+        let msg = token != nil ? "present" : "nil"
         tubeLog.notice("setAuthToken: \(msg, privacy: .public)")
         self.authToken = token
+    }
+
+    public func setAccountPageId(_ pageId: String?) {
+        let normalized = pageId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        accountPageId = normalized?.isEmpty == false ? normalized : nil
+        let state = accountPageId == nil ? "nil" : "present"
+        tubeLog.notice("setAccountPageId: \(state, privacy: .public)")
     }
 
     /// Sets the YouTube.com SAPISID cookie value extracted via the OAuthLogin/MergeSession

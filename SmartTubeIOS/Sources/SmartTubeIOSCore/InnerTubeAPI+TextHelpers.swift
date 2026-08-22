@@ -123,7 +123,19 @@ extension InnerTubeAPI {
     func parseRelativeDate(_ text: String) -> Date? {
         let stripped = text
             .replacingOccurrences(of: #"^(Streamed|Premiered|Started)\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+
+        // The TV subscriptions renderer frequently uses these labels instead
+        // of "0 days ago". Treating them as unknown pushed today's uploads
+        // below every older video during newest-first sorting.
+        if stripped == "today" || stripped == "just now" || stripped == "moments ago" {
+            return Date()
+        }
+        if stripped == "yesterday" {
+            return Date(timeIntervalSinceNow: -86_400)
+        }
+
         let pattern = #"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: stripped, range: NSRange(stripped.startIndex..., in: stripped)),

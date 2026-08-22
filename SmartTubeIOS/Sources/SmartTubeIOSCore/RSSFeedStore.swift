@@ -66,6 +66,12 @@ public actor RSSFeedStore {
         persist()
     }
 
+    /// Deletes all user-added feeds, including the synchronized copy.
+    public func clear() {
+        feeds = [:]
+        persist()
+    }
+
     /// Toggles the `isActive` flag for a feed by ID.
     public func setActive(_ id: UUID, _ active: Bool) {
         feeds[id]?.isActive = active

@@ -65,7 +65,7 @@ extension InnerTubeAPI {
         var body = makeBody(client: tvClientContext)
         body["feedbackTokens"] = [token]
         _ = try await postTV(endpoint: "feedback", body: body)
-        tubeLog.notice("sendFeedback token=\(token.prefix(20), privacy: .public)…")
+        tubeLog.notice("sendFeedback completed")
     }
 
     /// Sends a feed feedback signal when no pre-fetched token is available.
@@ -141,15 +141,22 @@ extension InnerTubeAPI {
             let webData = try await post(endpoint: "next", body: webBody)
             let videos   = parseRelatedVideos(from: webData)   // WEB client has compactVideoRenderer; TV client does not
             let status   = parseLikeStatus(from: tvData)
+            let likeCountText = parseLikeCountText(from: tvData)
             let chapters = parseChapters(from: webData)
             tubeLog.notice("fetchNextInfo (auth) → related=\(videos.count, privacy: .public) chapters=\(chapters.count, privacy: .public)")
-            return NextInfo(relatedVideos: videos, likeStatus: status, chapters: chapters)
+            return NextInfo(relatedVideos: videos, likeStatus: status, likeCountText: likeCountText, chapters: chapters)
         } else {
             let data     = try await post(endpoint: "next", body: tvBody)
             let videos   = parseRelatedVideos(from: data)
+            let likeCountText = parseLikeCountText(from: data)
             let chapters = parseChapters(from: data)
             tubeLog.notice("fetchNextInfo (anon) → related=\(videos.count, privacy: .public) chapters=\(chapters.count, privacy: .public)")
-            return NextInfo(relatedVideos: videos, likeStatus: .none, chapters: chapters)
+            return NextInfo(
+                relatedVideos: videos,
+                likeStatus: .none,
+                likeCountText: likeCountText,
+                chapters: chapters
+            )
         }
     }
 
@@ -159,19 +166,26 @@ extension InnerTubeAPI {
     /// Uses the WEB client: calls `/next` with the videoId to extract the
     /// comments continuation token from `engagementPanels`, then fetches comments.
     /// Returns an empty array when comments are disabled or the token is absent.
-    public func fetchComments(videoId: String) async throws -> [Comment] {
-        var body = makeBody(client: webClientContext)
-        body["videoId"] = videoId
-        let nextData = try await post(endpoint: "next", body: body)
-        guard let token = parseCommentsContinuationToken(from: nextData) else {
-            tubeLog.notice("fetchComments: no comments token for videoId=\(videoId, privacy: .public)")
-            return []
+    public func fetchComments(videoId: String, continuationToken: String? = nil) async throws -> CommentsPage {
+        let token: String
+        if let continuationToken, !continuationToken.isEmpty {
+            token = continuationToken
+        } else {
+            var body = makeBody(client: webClientContext)
+            body["videoId"] = videoId
+            let nextData = try await post(endpoint: "next", body: body)
+            guard let firstToken = parseCommentsContinuationToken(from: nextData) else {
+                tubeLog.notice("fetchComments: no comments token for videoId=\(videoId, privacy: .public)")
+                return CommentsPage(comments: [], continuationToken: nil)
+            }
+            token = firstToken
         }
         let commentsBody = makeBody(client: webClientContext, continuationToken: token)
         let commentsData = try await post(endpoint: "next", body: commentsBody)
         let comments = parseComments(from: commentsData)
-        tubeLog.notice("fetchComments videoId=\(videoId, privacy: .public) → \(comments.count, privacy: .public) comments")
-        return comments
+        let next = parseCommentsPageContinuation(from: commentsData)
+        tubeLog.notice("fetchComments videoId=\(videoId, privacy: .public) → \(comments.count, privacy: .public) comments next=\(next != nil, privacy: .public)")
+        return CommentsPage(comments: comments, continuationToken: next)
     }
 
     // MARK: - Private social parsers
@@ -217,6 +231,45 @@ extension InnerTubeAPI {
         return found ?? .none
     }
 
+    /// Parses the public like count from the existing `/next` response when
+    /// YouTube includes it alongside the segmented like/dislike buttons.
+    /// Returns nil when the response does not expose a count.
+    private func parseLikeCountText(from json: [String: Any]) -> String? {
+        var found: String?
+
+        func textValue(_ value: Any?) -> String? {
+            if let text = value as? String, !text.isEmpty { return text }
+            if let dict = value as? [String: Any], let text = extractText(dict), !text.isEmpty {
+                return text
+            }
+            return nil
+        }
+
+        func walk(_ obj: Any, depth: Int = 0) {
+            guard found == nil, depth < 50 else { return }
+            if let dict = obj as? [String: Any] {
+                if let segmented = dict["segmentedLikeDislikeButtonRenderer"] as? [String: Any],
+                   let likeButton = segmented["likeButton"] as? [String: Any],
+                   let toggle = likeButton["toggleButtonRenderer"] as? [String: Any] {
+                    found = textValue(toggle["defaultText"])
+                        ?? textValue(toggle["accessibilityData"])
+                }
+                if found == nil {
+                    found = textValue(dict["likeCount"])
+                        ?? textValue(dict["likeCountNotliked"])
+                }
+                if found == nil {
+                    for value in dict.values { walk(value, depth: depth + 1) }
+                }
+            } else if let array = obj as? [Any] {
+                for value in array { walk(value, depth: depth + 1) }
+            }
+        }
+
+        walk(json)
+        return found
+    }
+
     /// Parses related / suggested videos from a `/next` response.
     /// Related videos appear as `compactVideoRenderer` in `secondaryResults`.
     private func parseRelatedVideos(from json: [String: Any]) -> [Video] {
@@ -255,6 +308,10 @@ extension InnerTubeAPI {
             if let dict = obj as? [String: Any] {
                 if let renderer = dict["macroMarkersListItemRenderer"] as? [String: Any] {
                     let title = (renderer["title"] as? [String: Any]).flatMap { extractText($0) } ?? ""
+                    let thumbnailURL = ((renderer["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?
+                        .last
+                        .flatMap { $0["url"] as? String }
+                        .flatMap(URL.init(string:))
                     // startTimeSeconds arrives as Int, Double, or NSNumber depending on
                     // how JSONSerialization bridges the JSON number — handle all three.
                     let startTime: TimeInterval? = {
@@ -272,7 +329,7 @@ extension InnerTubeAPI {
                             .flatMap { parseDuration($0) }
                     }()
                     if let t = startTime {
-                        chapters.append(Chapter(title: title, startTime: t))
+                        chapters.append(Chapter(title: title, startTime: t, thumbnailURL: thumbnailURL))
                     }
                     return
                 }
@@ -282,7 +339,16 @@ extension InnerTubeAPI {
             }
         }
         walk(json)
-        return chapters.sorted { $0.startTime < $1.startTime }
+        let sorted = chapters.sorted { $0.startTime < $1.startTime }
+        var seenStartTimes = Set<Int64>()
+        let unique = sorted.filter { chapter in
+            let millisecondKey = Int64((chapter.startTime * 1_000).rounded())
+            return seenStartTimes.insert(millisecondKey).inserted
+        }
+        if unique.count != sorted.count {
+            tubeLog.notice("[parseChapters] removed \(sorted.count - unique.count, privacy: .public) duplicate chapter entries")
+        }
+        return unique
     }
 
     /// Finds the comments continuation token inside the `engagementPanels` of a
@@ -322,6 +388,28 @@ extension InnerTubeAPI {
             if let t = found { return t }
         }
         return nil
+    }
+
+    private func parseCommentsPageContinuation(from json: [String: Any]) -> String? {
+        var tokens: [String] = []
+        func walk(_ obj: Any, depth: Int = 0) {
+            guard depth < 50 else { return }
+            if let dict = obj as? [String: Any] {
+                if let contItem = dict["continuationItemRenderer"] as? [String: Any],
+                   let endpoint = contItem["continuationEndpoint"] as? [String: Any],
+                   let cmd = endpoint["continuationCommand"] as? [String: Any],
+                   let token = cmd["token"] as? String,
+                   !token.isEmpty {
+                    tokens.append(token)
+                    return
+                }
+                for value in dict.values { walk(value, depth: depth + 1) }
+            } else if let array = obj as? [Any] {
+                for item in array { walk(item, depth: depth + 1) }
+            }
+        }
+        walk(json)
+        return tokens.last
     }
 
     /// Parses `commentRenderer` objects from a comments continuation `/next` response.

@@ -7,9 +7,11 @@ extension PlaybackViewModel {
 
     public func selectCaption(_ track: CaptionTrack?) {
         captionsManager.selectCaption(track, currentTime: currentTime)
-        // Persist the user's choice so it can be re-applied to the next video.
-        // nil means "captions off" and clears the preference.
+        // tvOS follows the current AVKit playback context. Other platforms retain
+        // the existing global language preference across videos.
+        #if !os(tvOS)
         settings.preferredCaptionLanguage = track?.languageCode
+        #endif
     }
 
     func updateCaptionCue(for time: TimeInterval) {
@@ -28,6 +30,11 @@ extension PlaybackViewModel {
         if let match = tracks.first(where: { $0.languageCode == code })
             ?? tracks.first(where: { $0.languageCode.hasPrefix(base) }) {
             captionsManager.selectCaption(match, currentTime: currentTime)
+        } else if let source = tracks.first,
+                  let language = source.translationLanguages.first(where: { $0.languageCode == code })
+                    ?? source.translationLanguages.first(where: { $0.languageCode.hasPrefix(base) }),
+                  let translated = source.translated(to: language) {
+            captionsManager.selectCaption(translated, currentTime: currentTime)
         }
         // No match: leave captions off rather than forcing a wrong language.
     }

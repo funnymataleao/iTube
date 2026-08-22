@@ -100,6 +100,38 @@ struct VideoRendererPublishAgeTests {
                 "publishedAt should be non-nil for runs-format '3 months ago'")
     }
 
+    @Test("parseVideoRenderer treats Today as the newest publish date")
+    func videoRenderer_today_populatesCurrentPublishedAt() async throws {
+        let response = makeVideoRendererAgeResponse(makeRenderer(
+            publishedTimeText: ["simpleText": "Today"]
+        ))
+        let beforeParsing = Date()
+        let api = InnerTubeAPI()
+        let group = try await api.parseVideoGroupForTesting(response, title: nil)
+        let video = try #require(group.videos.first, "Expected at least one video from response")
+        let publishedAt = try #require(video.publishedAt, "publishedAt should be non-nil for 'Today'")
+
+        #expect(publishedAt >= beforeParsing.addingTimeInterval(-2),
+                "Today should sort with current uploads rather than behind older videos")
+        #expect(publishedAt <= Date().addingTimeInterval(2),
+                "Today should not produce a future publish date")
+    }
+
+    @Test("parseVideoRenderer treats Yesterday as one day old")
+    func videoRenderer_yesterday_populatesRecentPublishedAt() async throws {
+        let response = makeVideoRendererAgeResponse(makeRenderer(
+            publishedTimeText: ["simpleText": "Yesterday"]
+        ))
+        let api = InnerTubeAPI()
+        let group = try await api.parseVideoGroupForTesting(response, title: nil)
+        let video = try #require(group.videos.first, "Expected at least one video from response")
+        let publishedAt = try #require(video.publishedAt, "publishedAt should be non-nil for 'Yesterday'")
+        let expectedDate = Date(timeIntervalSinceNow: -86_400)
+
+        #expect(abs(publishedAt.timeIntervalSince(expectedDate)) < 2,
+                "Yesterday should sort approximately one day before current uploads")
+    }
+
     @Test("parseVideoRenderer without publishedTimeText leaves publishedAt nil")
     func videoRenderer_noPublishedTimeText_publishedAtIsNil() async throws {
         let response = makeVideoRendererAgeResponse(makeRenderer(publishedTimeText: nil))
@@ -180,5 +212,61 @@ struct LockupViewModelPublishAgeTests {
         let video = try #require(group.videos.first, "Expected at least one video from lockupViewModel response")
         #expect(video.publishedAt == nil,
                 "publishedAt should be nil when no row contains a relative date string")
+    }
+
+    @Test("parseLockupViewModel preserves coarse Today text for honest formatting")
+    func lockupViewModel_today_preservesRawText() async throws {
+        let rows: [[String: Any]] = [
+            ["metadataParts": [["text": ["content": "Channel Name"]]]],
+            ["metadataParts": [["text": ["content": "Today"]]]]
+        ]
+        let response = makeLockupViewModelAgeResponse(makeLockup(metadataRows: rows))
+        let api = InnerTubeAPI()
+        let group = try await api.parseVideoGroupForTesting(response, title: nil)
+        let video = try #require(group.videos.first)
+
+        #expect(video.publishedAt != nil)
+        #expect(video.publishedTimeText == "Today")
+        #expect(VideoPublishAgeFormatter.label(for: video) == nil)
+    }
+}
+
+@Suite("Task #97 — section header publish-age fallback")
+struct SectionHeaderPublishAgeTests {
+    @Test("Today section header is preserved instead of becoming a fabricated minute")
+    func todaySectionHeaderPreservesRawText() async throws {
+        let tile: [String: Any] = [
+            "contentType": "TILE_CONTENT_TYPE_VIDEO",
+            "onSelectCommand": ["watchEndpoint": ["videoId": "section-today"]],
+            "metadata": [
+                "tileMetadataRenderer": [
+                    "title": ["simpleText": "Section Video"]
+                ]
+            ]
+        ]
+        let response: [String: Any] = [
+            "contents": [
+                "sectionListRenderer": [
+                    "contents": [[
+                        "itemSectionRenderer": [
+                            "header": [
+                                "itemSectionHeaderRenderer": [
+                                    "title": ["simpleText": "Today"]
+                                ]
+                            ],
+                            "contents": [["tileRenderer": tile]]
+                        ]
+                    ]]
+                ]
+            ]
+        ]
+
+        let api = InnerTubeAPI()
+        let group = try await api.parseVideoGroupForTesting(response, title: nil)
+        let video = try #require(group.videos.first)
+
+        #expect(video.publishedAt != nil)
+        #expect(video.publishedTimeText == "Today")
+        #expect(VideoPublishAgeFormatter.label(for: video) == nil)
     }
 }

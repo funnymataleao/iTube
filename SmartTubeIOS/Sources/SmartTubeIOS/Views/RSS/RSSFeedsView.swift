@@ -61,7 +61,7 @@ struct RSSFeedsView: View {
             ManageRSSFeedsView()
         }
         #if os(tvOS)
-        .navigationDestination(item: $selectedVideo) { video in
+        .fullScreenCover(item: $selectedVideo) { video in
             PlayerView(video: video, api: api)
         }
         #endif
@@ -102,11 +102,10 @@ struct RSSFeedsView: View {
     // MARK: - Video List
 
     private var videoList: some View {
-        let hideShorts = store.settings.hideShorts
         let hideLiveShorts = store.settings.hideLiveShorts
         let hideVideoPremieres = store.settings.hideVideoPremieres
         let displayVideos = vm.videos
-            .filter { !hideShorts || !$0.isShort }
+            .filter { !$0.isShort }
             .filter { !hideLiveShorts || !($0.isLive && $0.isShort) }
             .filter { !hideVideoPremieres || !$0.isUpcoming }
         return ScrollView {
@@ -115,6 +114,13 @@ struct RSSFeedsView: View {
                 onSelect: { video in
                     #if os(iOS)
                     playerRouter.open(video: video, api: api)
+                    #elseif os(tvOS)
+                    let capturedVideos = displayVideos
+                    Task { @MainActor in
+                        await CurrentQueueStore.shared.replaceAll(with: capturedVideos)
+                        let startIndex = capturedVideos.firstIndex(where: { $0.id == video.id }) ?? 0
+                        selectedVideo = await CurrentQueueStore.shared.videoAt(index: startIndex) ?? video
+                    }
                     #else
                     selectedVideo = video
                     #endif

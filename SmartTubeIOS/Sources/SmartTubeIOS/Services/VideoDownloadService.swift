@@ -208,8 +208,7 @@ public final class VideoDownloadService {
                 #endif
                 return
             }
-            downloadLog.notice("[download] merging adaptive videoURL prefix=\(videoURL.absoluteString.prefix(60))")
-            downloadLog.notice("[download] merging adaptive audioURL prefix=\(audioURL.absoluteString.prefix(60))")
+            downloadLog.notice("[download] merging adaptive video and audio streams")
             state = .downloading(progress: 0)
             let mergedURL = try await mergeAdaptiveStreams(videoURL: videoURL, audioURL: audioURL, videoId: video.id,
                                                           userAgent: InnerTubeClients.Android.userAgent)
@@ -235,7 +234,7 @@ public final class VideoDownloadService {
             downloadLog.error("[download] ❌ failed: domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
             let userMessage: String
             if nsErr.domain == "PHPhotosErrorDomain" {
-                userMessage = "Could not save to Photos. Please check Settings → Privacy & Security → Photos and allow SmartTube to add photos."
+                userMessage = "Could not save to Photos. Please check Settings → Privacy & Security → Photos and allow iTube to add photos."
             } else if let urlErr = error as? URLError, urlErr.code == .fileDoesNotExist {
                 userMessage = "Download failed — the video file was removed before saving. Please try again."
             } else {
@@ -361,8 +360,10 @@ public final class VideoDownloadService {
             throw URLError(.badServerResponse)
         }
 
-        let videoFmt = try await videoTrackSrc.load(.formatDescriptions).first!
-        let audioFmt = try await audioTrackSrc.load(.formatDescriptions).first!
+        guard let videoFmt = try await videoTrackSrc.load(.formatDescriptions).first,
+              let audioFmt = try await audioTrackSrc.load(.formatDescriptions).first else {
+            throw URLError(.cannotDecodeContentData)
+        }
         let duration  = try await videoAsset.load(.duration)
 
         let writer = try AVAssetWriter(outputURL: destURL, fileType: .mp4)
@@ -528,7 +529,7 @@ public final class VideoDownloadService {
                     continuation.resume()
                 } else {
                     // success=false, error=nil means permission was denied or restricted at save time
-                    let desc = "Could not save to Photos. Please check Settings → Privacy & Security → Photos and allow SmartTube to add photos."
+                    let desc = "Could not save to Photos. Please check Settings → Privacy & Security → Photos and allow iTube to add photos."
                     downloadLog.error("[download] ❌ PHPhotoLibrary performChanges returned success=false with no error — likely permission denied")
                     let permissionError = NSError(
                         domain: "PHPhotosErrorDomain",

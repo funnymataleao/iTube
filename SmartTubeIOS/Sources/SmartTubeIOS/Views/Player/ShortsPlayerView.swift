@@ -290,6 +290,7 @@ public struct ShortsPlayerView: View {
         #endif
         .ignoresSafeArea()
         .onAppear {
+            vm.updateAuthToken(authService.accessToken)
             if vm.currentVideoId == videos[currentIndex].id {
                 if vm.wasPlayingBeforeSuspend { vm.resume() }
             } else {
@@ -299,6 +300,13 @@ public struct ShortsPlayerView: View {
                 vm.showControls()
                 vm.cancelControlsHide()
             }
+        }
+        .onChange(of: authService.accessToken) { _, token in
+            vm.updateAuthToken(token)
+            #if os(iOS)
+            standbyVM?.updateAuthToken(token)
+            previousVM?.updateAuthToken(token)
+            #endif
         }
         .onDisappear {
             guard !isInBackground else { return }

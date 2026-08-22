@@ -1,23 +1,38 @@
 import SwiftUI
 import SmartTubeIOSCore
 
+#if os(tvOS)
+private struct TVHomePlaybackReturnTarget: Equatable {
+    let shelfID: UUID
+    let videoID: String
+    let fallbackVideoID: String?
+}
+#endif
+
 // MARK: - HomeView
 //
-// YouTube-style home tab.  A horizontal chip bar at the top lets the user
-// switch between every available section:
-//   • "Home"  chip  → multi-shelf overview (Subscriptions row,
-//                      Recommended row) driven by HomeViewModel.
-//   • Any other chip → full-screen video feed for that section driven by a
-//                      dedicated BrowseViewModel instance.
+// YouTube-style home tab. A horizontal chip bar at the top switches between
+// discovery feeds. On tvOS, Home preserves the personalised shelf structure
+// returned by YouTube so Siri Remote navigation is vertical between shelves
+// and horizontal between videos inside a shelf.
 
 public struct HomeView: View {
     @State private var homeVM: HomeViewModel
+    #if os(tvOS)
+    /// tvOS Home uses the app-scoped model so foreground/settings refreshes and
+    /// the pixels on screen always address the same feed state.
+    @Environment(BrowseViewModel.self) private var sectionVM
+    #else
     @State private var sectionVM: BrowseViewModel
+    #endif
     @Environment(AuthService.self) private var auth
     @Environment(SettingsStore.self) private var store
     @Environment(\.innerTubeAPI) private var api
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
+    private var hasAuthenticatedAccess: Bool {
+        auth.accessToken?.isEmpty == false
+    }
     #if os(iOS)
     @Environment(PlayerRouter.self) private var playerRouter
     #endif
@@ -28,7 +43,6 @@ public struct HomeView: View {
     @State private var selectedPlaylist: Video?
     @State private var shortsPresentation: ShortsPresentation?
     @State private var channelDestination: ChannelDestination?
-    @State private var showSignIn = false
     @State private var queueVideosCount: Int = 0
     // Auto-retry tracking: record the type-specific video count at the moment a
     // scroll trigger fires so onChange can detect whether the next page helped.
@@ -44,6 +58,10 @@ public struct HomeView: View {
     @State private var nonShortsCountAtTrigger = 0
     #if os(tvOS)
     @FocusState private var focusedSection: BrowseSection?
+    /// Semantic return point for a pushed player. A shelf/video identity is more
+    /// stable than a raw pixel offset when Home paginates while playback is open.
+    @State private var playbackReturnTarget: TVHomePlaybackReturnTarget?
+    @State private var restoreFocusedVideoID: String?
     #endif
     private var visibleSections: [BrowseSection] {
         let types = store.settings.enabledSections
@@ -56,90 +74,103 @@ public struct HomeView: View {
            let homeIdx = all.firstIndex(where: { $0.type == .home }) {
             all.insert(BrowseSection(type: .recommended), at: homeIdx + 1)
         }
-        if store.settings.hideShorts {
-            return all.filter { $0.type != .shorts }
-        }
-        return all
+        return all.filter { $0.type != .shorts }
     }
 
     public init(api: InnerTubeAPI) {
         _homeVM = State(initialValue: HomeViewModel(api: api))
+        #if !os(tvOS)
         _sectionVM = State(initialValue: BrowseViewModel(api: api))
+        #endif
     }
 
     // MARK: - Body
 
     public var body: some View {
-        VStack(spacing: 0) {
-            chipBar
-            #if !os(tvOS)
-            Divider()
-            #endif
+        Group {
+            #if os(tvOS)
+            // tvOS: no chip bar, content fills entire space under tabs
             contentArea
-                #if !os(iOS)
-                .navigationDestination(item: $selectedVideo) { video in
-                    #if os(macOS)
-                    if store.settings.useTOSPlayerOnMac && tosPlayerFallbackVideoId != video.id {
-                        TOSPlayerView(video: video, api: api) {
-                            tosPlayerFallbackVideoId = video.id
-                        }
-                        .environment(store)
-                        .onDisappear { tosPlayerFallbackVideoId = nil }
-                    } else {
-                        PlayerView(video: video, api: api)
-                    }
-                    #else
+                .fullScreenCover(item: $selectedVideo) { video in
                     PlayerView(video: video, api: api)
-                    #endif
                 }
-                #endif
                 .navigationDestination(item: $selectedPlaylist) { stub in
                     PlaylistView(playlistId: stub.id, playlistTitle: stub.title, api: api)
                 }
                 .navigationDestination(item: $channelDestination) { dest in
                     ChannelView(channelId: dest.channelId)
                 }
-                #if os(tvOS)
                 .focusSection()
-                #endif
+            #else
+            VStack(spacing: 0) {
+                chipBar
+                Divider()
+                contentArea
+                    #if !os(iOS)
+                    .navigationDestination(item: $selectedVideo) { video in
+                    #if os(macOS)
+                    if store.settings.useTOSPlayerOnMac && tosPlayerFallbackVideoId != video.id {
+                            TOSPlayerView(video: video, api: api) {
+                                tosPlayerFallbackVideoId = video.id
+                            }
+                            .environment(store)
+                            .onDisappear { tosPlayerFallbackVideoId = nil }
+                        } else {
+                            PlayerView(video: video, api: api)
+                        }
+                    #else
+                    PlayerView(video: video, api: api)
+                    #endif
+                    }
+                    #endif
+                    .navigationDestination(item: $selectedPlaylist) { stub in
+                        PlaylistView(playlistId: stub.id, playlistTitle: stub.title, api: api)
+                    }
+                    .navigationDestination(item: $channelDestination) { dest in
+                        ChannelView(channelId: dest.channelId)
+                    }
+            }
+            #endif
         }
         #if os(iOS)
-        // Player cover is centralised in MainTabView; deep-link handled there too.
         .toolbar(.hidden, for: .navigationBar)
         .fullScreenCover(item: $shortsPresentation) { target in
             ShortsPlayerView(videos: target.videos, startIndex: target.startIndex, api: api)
         }
         #endif
-        .sheet(isPresented: $showSignIn) { SignInView() }
         .onReceive(NotificationCenter.default.publisher(for: .openChannel)) { note in
             guard let channelId = note.userInfo?["channelId"] as? String, !channelId.isEmpty else { return }
             channelDestination = ChannelDestination(channelId: channelId)
         }
-        .onChange(of: visibleSections) { _, newSections in
-            if !newSections.contains(selectedSection), let first = newSections.first {
-                selectedSection = first
-            }
-        }
-        .task(id: auth.accessToken) {
-            await homeVM.updateAuthToken(auth.accessToken)
-            await sectionVM.updateAuthToken(auth.accessToken)
-        }
         .task(id: selectedSection) {
-            // Reset auto-retry flags when switching sections to prevent stale
-            // triggers from a previous section firing on the new section's content.
             needsMoreShorts = false
             needsMoreNonShorts = false
             if selectedSection.type == .playlists {
                 queueVideosCount = await CurrentQueueStore.shared.videos.count
             } else if selectedSection.type != .home {
-                // Safety net: if sectionVM somehow fell out of sync with selectedSection
-                // (e.g., the chip action raced with an in-flight cancellation, or an
-                // @Observable tracking gap left the view empty), force a reload.
                 if sectionVM.currentSection != selectedSection {
                     sectionVM.select(section: selectedSection)
                 }
             }
         }
+        #if os(tvOS)
+        .task(id: auth.accessToken) {
+            // The app root and this reusable view can observe the same token in
+            // either order. BrowseViewModel makes identical propagation idempotent,
+            // so exactly one request bootstraps the shared Home feed.
+            await sectionVM.updateAuthToken(auth.accessToken)
+        }
+        .onAppear {
+            if selectedSection.type == .home {
+                sectionVM.refreshIfStale()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, selectedSection.type == .home {
+                sectionVM.refreshIfStale()
+            }
+        }
+        #endif
     }
 
     // MARK: - Chip bar
@@ -154,8 +185,6 @@ public struct HomeView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial)
-        .focusSection()
-        .defaultFocus($focusedSection, selectedSection)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("home.chipBar")
         #else
@@ -240,11 +269,17 @@ public struct HomeView: View {
     @ViewBuilder
     private var contentArea: some View {
         if selectedSection.type == .home {
+            #if os(tvOS)
+            // The Apple TV Home is useful before sign-in: BrowseViewModel loads
+            // YouTube's public discovery feed and falls back to popular shelves.
+            homeShelves
+            #else
             if auth.isSignedIn {
                 homeShelves
             } else {
                 homeSignedOutPrompt
             }
+            #endif
         } else if selectedSection.type == .channels {
             channelListFeed
                 .accessibilityIdentifier("home.sectionContainer")
@@ -276,7 +311,9 @@ public struct HomeView: View {
             Text("Sign in to see your feed")
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            Button("Sign In") { showSignIn = true }
+            NavigationLink("Open Settings") {
+                SettingsView()
+            }
                 .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -285,6 +322,9 @@ public struct HomeView: View {
     // MARK: - Home shelves  (unified interleaved feed)
 
     private var homeShelves: some View {
+        #if os(tvOS)
+        personalTVHomeShelves
+        #else
         Group {
             if homeVM.isLoadingAny && homeVM.mergedVideos.isEmpty {
                 ProgressView()
@@ -327,7 +367,376 @@ public struct HomeView: View {
                 }
             }
         }
+        #endif
     }
+
+    #if os(tvOS)
+    /// Apple TV-style home with hero carousel and content shelves below.
+    @ViewBuilder
+    private var personalTVHomeShelves: some View {
+        originalPersonalTVHomeShelves
+    }
+
+    /// New Apple TV-style home screen with full-screen hero carousel and video row section.
+    @ViewBuilder
+    private var appleTVStyleHome: some View {
+        // Hero uses first group's videos, shelves show ALL groups
+        let firstGroupVideos = sectionVM.videoGroups.first?.videos ?? []
+        let heroVideos = Array(firstGroupVideos.prefix(10))
+
+        if (!sectionVM.hasCompletedInitialLoad || sectionVM.isLoading)
+            && sectionVM.videoGroups.isEmpty {
+            ProgressView("Loading videos…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if sectionVM.videoGroups.isEmpty {
+            feedEmptyState
+        } else {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 0) {
+                    // Full-screen hero carousel - no top padding, starts right under tabs
+                    GeometryReader { geometry in
+                        AppleTVHeroView(
+                            videos: heroVideos,
+                            onVideoSelect: { video in
+                                selectVideo(video, from: heroVideos)
+                            }
+                        )
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                    }
+                    .frame(height: UIScreen.main.bounds.height)
+                    .focusSection()
+
+                    // All video shelves below - show ALL groups including shorts
+                    let paginationTrigger = sectionVM.videoGroups.last?.videos.last
+                    let rows = sectionVM.videoGroups
+
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, group in
+                            VStack(alignment: .leading, spacing: 4) {
+                                if let title = group.title, !title.isEmpty {
+                                    Text(title)
+                                        .font(.headline.weight(.semibold))
+                                        .padding(.horizontal, 32)
+                                        .accessibilityAddTraits(.isHeader)
+                                }
+
+                                VideoRowSection(
+                                    videos: group.videos,
+                                    onSelect: { video in
+                                        playbackReturnTarget = TVHomePlaybackReturnTarget(
+                                            shelfID: group.id,
+                                            videoID: video.id,
+                                            fallbackVideoID: focusFallback(
+                                                afterRemoving: video.id,
+                                                from: group.videos
+                                            )
+                                        )
+                                        restoreFocusedVideoID = nil
+                                        selectVideo(video, from: group.videos)
+                                    },
+                                    cardWidth: 650,
+                                    loadMore: {
+                                        if let lastVideo = group.videos.last {
+                                            sectionVM.loadMoreHomeShelfIfNeeded(
+                                                shelfID: group.id,
+                                                lastVideo: lastVideo
+                                            )
+                                        }
+                                        if index == rows.count - 1, let paginationTrigger {
+                                            sectionVM.loadMoreIfNeeded(lastVideo: paginationTrigger)
+                                        }
+                                    },
+                                    restoreFocusedVideoID: playbackReturnTarget?.shelfID == group.id
+                                        ? restoreFocusedVideoID
+                                        : nil,
+                                    onFocusRestored: { videoID in
+                                        if restoreFocusedVideoID == videoID {
+                                            restoreFocusedVideoID = nil
+                                        }
+                                    }
+                                )
+                            }
+                            .id(group.id)
+                            .accessibilityIdentifier("home.shelf.\(index)")
+                        }
+
+                        if sectionVM.isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 24)
+                        }
+                    }
+                    .padding(.top, 18)
+                    .padding(.bottom, 24)
+                    .background(Color(white: 0.08))
+                    .focusSection()
+                }
+            }
+        }
+    }
+
+    /// Original YouTube-style personalized shelves (kept as fallback).
+    @ViewBuilder
+    private var originalPersonalTVHomeShelves: some View {
+        let paginationTrigger = sectionVM.videoGroups.last?.videos.last
+
+        // 🔍 DIAGNOSTIC: Compute filtered rows with logging
+        let diagnosticResult = Self.filterAndLogRows(
+            groups: sectionVM.videoGroups,
+            hideShorts: true,
+            hideLiveShorts: store.settings.hideLiveShorts,
+            hideVideoPremieres: store.settings.hideVideoPremieres
+        )
+        let filteredRows = diagnosticResult.filteredRows
+
+        let rows = hasAuthenticatedAccess
+            ? orderedPersonalTVRows(filteredRows)
+            : orderedGuestTVRows(filteredRows)
+
+        if rows.isEmpty && (!sectionVM.hasCompletedInitialLoad || sectionVM.isLoading) {
+            ProgressView("Loading videos…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if rows.isEmpty {
+            feedEmptyState
+        } else {
+            ScrollViewReader { verticalProxy in
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, group in
+                            VStack(alignment: .leading, spacing: 4) {
+                                if let title = group.title {
+                                    Text(title)
+                                        .font(.headline.weight(.semibold))
+                                        .padding(.horizontal, 32)
+                                        .accessibilityAddTraits(.isHeader)
+                                }
+
+                                VideoRowSection(
+                                    videos: group.videos,
+                                    onSelect: { video in
+                                        playbackReturnTarget = TVHomePlaybackReturnTarget(
+                                            shelfID: group.id,
+                                            videoID: video.id,
+                                            fallbackVideoID: focusFallback(
+                                                afterRemoving: video.id,
+                                                from: group.videos
+                                            )
+                                        )
+                                        restoreFocusedVideoID = nil
+                                        selectVideo(video, from: group.videos)
+                                    },
+                                    cardWidth: 650,
+                                    loadMore: {
+                                        if let lastVideo = group.videos.last {
+                                            sectionVM.loadMoreHomeShelfIfNeeded(
+                                                shelfID: group.id,
+                                                lastVideo: lastVideo
+                                            )
+                                        }
+                                    },
+                                    restoreFocusedVideoID: playbackReturnTarget?.shelfID == group.id
+                                        ? restoreFocusedVideoID
+                                        : nil,
+                                    onFocusRestored: { videoID in
+                                        if restoreFocusedVideoID == videoID {
+                                            restoreFocusedVideoID = nil
+                                        }
+                                    }
+                                )
+                            }
+                            .id(group.id)
+                            .accessibilityIdentifier("home.shelf.\(index)")
+                            .onAppear {
+                                // Trigger vertical feed continuation when approaching the end
+                                // Load more shelves when user reaches the second-to-last shelf
+                                if index >= rows.count - 2, let paginationTrigger {
+                                    sectionVM.loadMoreIfNeeded(lastVideo: paginationTrigger)
+                                }
+                            }
+                        }
+
+                        if sectionVM.isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 24)
+                        }
+                    }
+                    .padding(.top, 18)
+                    .padding(.bottom, 24)
+                }
+                .accessibilityIdentifier("home.personalizedShelves")
+                .refreshable { sectionVM.loadContent(refresh: true, source: "tvHome.refresh") }
+                .focusSection()
+                .onChange(of: selectedVideo?.id) { previousVideoID, currentVideoID in
+                    guard previousVideoID != nil,
+                          currentVideoID == nil,
+                          let target = playbackReturnTarget
+                    else { return }
+
+                    // A watched card is removed while the player is open. Restore
+                    // focus to the adjacent card captured at selection time instead
+                    // of targeting an element that no longer exists.
+                    let resolvedShelf = rows.first(where: { $0.id == target.shelfID })
+                        ?? rows.first(where: { group in
+                            group.videos.contains(where: { $0.id == target.videoID })
+                                || target.fallbackVideoID.map { fallbackID in
+                                    group.videos.contains(where: { $0.id == fallbackID })
+                                } == true
+                        })
+                    guard let resolvedShelf else {
+                        playbackReturnTarget = nil
+                        restoreFocusedVideoID = nil
+                        return
+                    }
+                    let resolvedVideoID = resolvedShelf.videos.contains(where: { $0.id == target.videoID })
+                        ? target.videoID
+                        : target.fallbackVideoID.flatMap { fallbackID in
+                            resolvedShelf.videos.contains(where: { $0.id == fallbackID })
+                                ? fallbackID
+                                : nil
+                        } ?? resolvedShelf.videos.first?.id
+                    guard let resolvedVideoID else {
+                        playbackReturnTarget = nil
+                        restoreFocusedVideoID = nil
+                        return
+                    }
+                    playbackReturnTarget = TVHomePlaybackReturnTarget(
+                        shelfID: resolvedShelf.id,
+                        videoID: resolvedVideoID,
+                        fallbackVideoID: nil
+                    )
+                    verticalProxy.scrollTo(resolvedShelf.id, anchor: .center)
+                    DispatchQueue.main.async {
+                        restoreFocusedVideoID = resolvedVideoID
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keep Google's personalized order, with "New to you" promoted to the
+    /// first carousel as requested. Structural/duplicate "Home" labels are
+    /// removed; all remaining topic order comes directly from Google.
+    private func orderedPersonalTVRows(_ rows: [VideoGroup]) -> [VideoGroup] {
+        var normalizedRows: [VideoGroup] = []
+
+        for row in rows {
+            var copy = row
+            let rawTitle = row.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowerTitle = rawTitle?.lowercased()
+            copy.title = (lowerTitle == "home" || lowerTitle == "главная" || rawTitle?.isEmpty == true)
+                ? nil
+                : rawTitle
+
+            normalizedRows.append(copy)
+        }
+
+        // A named Google shelf must never be folded into an untitled structural
+        // container. If named shelves exist, omit structural rows entirely.
+        let hasNamedRows = normalizedRows.contains { $0.title != nil }
+        var result: [VideoGroup] = []
+        for copy in normalizedRows where !hasNamedRows || copy.title != nil {
+            if let title = copy.title,
+               let existingIndex = result.firstIndex(where: {
+                   $0.title?.localizedCaseInsensitiveCompare(title) == .orderedSame
+               }) {
+                var seen = Set(result[existingIndex].videos.map(\.id))
+                result[existingIndex].videos.append(contentsOf: copy.videos.filter { seen.insert($0.id).inserted })
+                result[existingIndex].nextPageToken = copy.nextPageToken ?? result[existingIndex].nextPageToken
+                result[existingIndex].rowContinuationToken = result[existingIndex].rowContinuationToken
+                    ?? copy.rowContinuationToken
+            } else {
+                result.append(copy)
+            }
+        }
+
+        if let newIndex = result.firstIndex(where: {
+            personalTVTitle($0, containsAny: [
+                "new to you", "new for you", "new for me", "recently published",
+                "новое для вас", "новое для меня", "недавно опублик"
+            ])
+        }) {
+            let shelf = result.remove(at: newIndex)
+            result.insert(shelf, at: 0)
+        }
+
+        return result
+    }
+
+    /// Guest discovery is already ordered by YouTube's public TV guide. Keep
+    /// that order intact and do not merge equal headings from different topics.
+    private func orderedGuestTVRows(_ rows: [VideoGroup]) -> [VideoGroup] {
+        rows.compactMap { row in
+            var copy = row
+            let rawTitle = row.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowerTitle = rawTitle?.lowercased() ?? ""
+            guard !BrowseViewModel.isGuestPersonalizedShelfTitle(rawTitle) else { return nil }
+            copy.title = (lowerTitle == "home" || lowerTitle == "главная" || rawTitle?.isEmpty == true)
+                ? nil
+                : rawTitle
+            return copy.videos.isEmpty ? nil : copy
+        }
+    }
+
+    private func personalTVTitle(_ group: VideoGroup, containsAny needles: [String]) -> Bool {
+        let title = (group.title ?? "").lowercased()
+        return needles.contains { title.contains($0) }
+    }
+
+    /// Picks the next card (or the previous card at the end of a row) before
+    /// opening playback, giving tvOS a deterministic focus target if Home removes
+    /// the watched card while the full-screen player is presented.
+    private func focusFallback(afterRemoving videoID: String, from videos: [Video]) -> String? {
+        guard let index = videos.firstIndex(where: { $0.id == videoID }) else {
+            return videos.first?.id
+        }
+        let nextIndex = videos.index(after: index)
+        if nextIndex < videos.endIndex { return videos[nextIndex].id }
+        guard index > videos.startIndex else { return nil }
+        return videos[videos.index(before: index)].id
+    }
+
+    // 🔍 DIAGNOSTIC: Helper function for filtering with logging
+    private static func filterAndLogRows(
+        groups: [VideoGroup],
+        hideShorts: Bool,
+        hideLiveShorts: Bool,
+        hideVideoPremieres: Bool
+    ) -> (filteredRows: [VideoGroup], removedCount: Int) {
+        print("📊 HOMEVIEW FILTER DIAGNOSTIC:")
+        print("📊 Input to filter: \(groups.count) groups from sectionVM")
+
+        var removedCount = 0
+        let filtered = groups.compactMap { group -> VideoGroup? in
+            var copy = group
+            let originalCount = group.videos.count
+            let originalShorts = group.videos.filter { $0.isShort }.count
+            let originalRegular = originalCount - originalShorts
+
+            copy.videos = group.videos.filter { video in
+                !video.isShort
+                    && (!hideLiveShorts || !(video.isLive && video.isShort))
+                    && (!hideVideoPremieres || !video.isUpcoming)
+            }
+
+            let afterFilterCount = copy.videos.count
+            let title = group.title ?? "<no title>"
+
+            if copy.videos.isEmpty {
+                print("📊 ❌ REMOVED: '\(title)' | had \(originalCount) videos (\(originalShorts) shorts, \(originalRegular) regular) → 0 after filter")
+                removedCount += 1
+                return nil
+            } else {
+                print("📊 ✅ KEPT: '\(title)' | \(originalCount) → \(afterFilterCount) videos")
+                return copy
+            }
+        }
+
+        print("📊 After filtering: \(filtered.count) groups remain (\(removedCount) removed)")
+        return (filtered, removedCount)
+    }
+
+    #endif
 
     // MARK: - Section feed  (non-Home chips)
 
@@ -603,7 +1012,22 @@ public struct HomeView: View {
 
     private var feedEmptyState: some View {
         VStack(spacing: 16) {
-            if sectionVM.isAuthRequired && !auth.isSignedIn {
+            if sectionVM.error != nil {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 60))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text("Couldn’t load videos")
+                    .font(.title3)
+                Text("Check your connection and try again.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Try Again") {
+                    sectionVM.loadContent(refresh: true, source: "emptyStateRetry")
+                }
+                .buttonStyle(.borderedProminent)
+            } else if sectionVM.isAuthRequired && !hasAuthenticatedAccess {
                 Image(systemName: AppSymbol.personCircleWarning)
                     .font(.system(size: 60))
                     .foregroundStyle(.secondary)
@@ -613,9 +1037,11 @@ public struct HomeView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button("Sign In") { showSignIn = true }
+                NavigationLink("Open Settings") {
+                    SettingsView()
+                }
                     .buttonStyle(.borderedProminent)
-            } else if !auth.isSignedIn && (selectedSection.type == .subscriptions || selectedSection.type == .channels) {
+            } else if !hasAuthenticatedAccess && (selectedSection.type == .subscriptions || selectedSection.type == .channels) {
                 Image(systemName: "person.badge.plus")
                     .font(.system(size: 60))
                     .foregroundStyle(.secondary)
@@ -659,6 +1085,15 @@ public struct HomeView: View {
         } else {
             #if os(iOS)
             playerRouter.open(video: video, api: api)
+            #elseif os(tvOS)
+            let capturedVideos = groupVideos.filter { candidate in
+                candidate.playlistId != candidate.id && !candidate.isShort
+            }
+            Task { @MainActor in
+                await CurrentQueueStore.shared.replaceAll(with: capturedVideos)
+                let startIndex = capturedVideos.firstIndex(where: { $0.id == video.id }) ?? 0
+                selectedVideo = await CurrentQueueStore.shared.videoAt(index: startIndex) ?? video
+            }
             #else
             selectedVideo = video
             #endif

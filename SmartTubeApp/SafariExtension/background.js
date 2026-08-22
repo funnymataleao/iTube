@@ -1,4 +1,4 @@
-// background.js — SmartTube Safari Extension
+// background.js — iTube Safari Extension
 //
 // Receives messages from content.js and navigates the active tab to the
 // smarttube:// deep link. browser.tabs.update is permitted from the background

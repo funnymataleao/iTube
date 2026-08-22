@@ -133,9 +133,7 @@ public final class BotGuardClient: PoTokenProvider, @unchecked Sendable {
             throw BotGuardError.challengeFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
         }
 
-        // Log raw response for parse debugging (truncated to 300 chars)
-        let rawPreview = String(data: data, encoding: .utf8).map { String($0.prefix(300)) } ?? "<binary>"
-        bgLog.notice("[BotGuard] WAA Create raw response (first 300): \(rawPreview, privacy: .public)")
+        bgLog.notice("[BotGuard] WAA Create response received (\(data.count, privacy: .public) bytes)")
 
         guard let outer = try? JSONSerialization.jsonObject(with: data) as? [Any],
               outer.count >= 2 else {
@@ -279,7 +277,7 @@ public final class BotGuardClient: PoTokenProvider, @unchecked Sendable {
                 if path.hasPrefix("//")   { fullURL = "https:\(path)" }
                 else if path.hasPrefix("http") { fullURL = path }
                 else                       { fullURL = "https://www.youtube.com\(path)" }
-                bgLog.notice("[BotGuard] player JS URL: \(String(fullURL.prefix(80)), privacy: .public)")
+                bgLog.notice("[BotGuard] player JS URL resolved")
                 return try await fetchInterpreterJS(from: fullURL)
             }
         }

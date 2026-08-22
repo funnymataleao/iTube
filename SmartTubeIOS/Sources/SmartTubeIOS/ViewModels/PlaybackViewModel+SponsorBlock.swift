@@ -8,10 +8,18 @@ extension PlaybackViewModel {
 
     @discardableResult
     public func checkSponsorSkip(at time: TimeInterval) -> Bool {
-        sponsorBlockManager.checkSponsorSkip(at: time)
+        guard hasAuthToken else {
+            currentToastSegment = nil
+            return false
+        }
+        return sponsorBlockManager.checkSponsorSkip(at: time)
     }
 
     public func skipToastSegment() {
+        guard hasAuthToken else {
+            currentToastSegment = nil
+            return
+        }
         sponsorBlockManager.skipToastSegment()
     }
 }

@@ -521,6 +521,155 @@ struct HistoryParsingTests {
 @Suite("Home Row Parsing")
 struct HomeRowParsingTests {
 
+    @Test("Live TVHTML5 shelf headers become separate Google-titled Home rows")
+    func tvHTML5ShelfHeaderRendererProducesNamedRows() async {
+        func tile(_ id: String, _ title: String) -> [String: Any] {
+            [
+                "tileRenderer": [
+                    "contentType": "TILE_CONTENT_TYPE_VIDEO",
+                    "contentId": id,
+                    "onSelectCommand": ["watchEndpoint": ["videoId": id]],
+                    "metadata": [
+                        "tileMetadataRenderer": [
+                            "title": ["simpleText": title],
+                            "lines": []
+                        ]
+                    ],
+                    "header": [
+                        "tileHeaderRenderer": [
+                            "thumbnail": [
+                                "thumbnails": [["url": "https://i.ytimg.com/vi/\(id)/hqdefault.jpg"]]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        }
+
+        func shelf(_ title: String, _ id: String) -> [String: Any] {
+            [
+                "shelfRenderer": [
+                    "headerRenderer": [
+                        "shelfHeaderRenderer": [
+                            "avatarLockup": [
+                                "avatarLockupRenderer": [
+                                    "title": ["runs": [["text": title]]]
+                                ]
+                            ]
+                        ]
+                    ],
+                    "content": [
+                        "horizontalListRenderer": [
+                            "items": [tile(id, title)],
+                            "continuations": [[
+                                "nextContinuationData": ["continuation": "\(id)-row-token"]
+                            ]]
+                        ]
+                    ]
+                ]
+            ]
+        }
+
+        let response: [String: Any] = [
+            "contents": [
+                "tvBrowseRenderer": [
+                    "content": [
+                        "tvSurfaceContentRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [
+                                        shelf("Recommended", "recommendedVideo"),
+                                        shelf("Top news", "newsVideo"),
+                                        shelf("Recently uploaded", "recentVideo")
+                                    ],
+                                    "continuations": [[
+                                        "nextContinuationData": ["continuation": "topics-page-token"]
+                                    ]]
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let rows = await InnerTubeAPI().parseVideoGroupRowsForTesting(response)
+        #expect(rows.map(\.title) == ["Recommended", "Top news", "Recently uploaded"])
+        #expect(rows.map { $0.videos.first?.id } == ["recommendedVideo", "newsVideo", "recentVideo"])
+        #expect(rows.map(\.rowContinuationToken) == [
+            "recommendedVideo-row-token",
+            "newsVideo-row-token",
+            "recentVideo-row-token"
+        ])
+        #expect(rows.last?.nextPageToken == "topics-page-token")
+    }
+
+    @Test("TVHTML5 topic continuation returns more named shelves")
+    func tvHTML5SectionListContinuationProducesMoreRows() async {
+        func video(_ id: String) -> [String: Any] {
+            ["videoRenderer": ["videoId": id, "title": ["simpleText": id]]]
+        }
+        func shelf(_ title: String, _ id: String) -> [String: Any] {
+            [
+                "shelfRenderer": [
+                    "headerRenderer": [
+                        "shelfHeaderRenderer": [
+                            "avatarLockup": [
+                                "avatarLockupRenderer": [
+                                    "title": ["runs": [["text": title]]]
+                                ]
+                            ]
+                        ]
+                    ],
+                    "content": ["horizontalListRenderer": ["items": [video(id)]]]
+                ]
+            ]
+        }
+
+        let response: [String: Any] = [
+            "continuationContents": [
+                "sectionListContinuation": [
+                    "contents": [
+                        shelf("Gaming", "gamingVideo"),
+                        shelf("Computer program", "programVideo")
+                    ],
+                    "continuations": [[
+                        "nextContinuationData": ["continuation": "next-topics-page-token"]
+                    ]]
+                ]
+            ]
+        ]
+
+        let rows = await InnerTubeAPI().parseVideoGroupRowsForTesting(response)
+        #expect(rows.map(\.title) == ["Gaming", "Computer program"])
+        #expect(rows.last?.nextPageToken == "next-topics-page-token")
+    }
+
+    @Test("Structural Home shelf title is never exposed as a heading")
+    func structuralHomeTitleIsSuppressed() async {
+        let response: [String: Any] = [
+            "contents": [[
+                "shelfRenderer": [
+                    "title": ["simpleText": "Home"],
+                    "content": [
+                        "horizontalListRenderer": [
+                            "items": [[
+                                "videoRenderer": [
+                                    "videoId": "homeVideo",
+                                    "title": ["simpleText": "Home video"]
+                                ]
+                            ]]
+                        ]
+                    ]
+                ]
+            ]]
+        ]
+
+        let rows = await InnerTubeAPI().parseVideoGroupRowsForTesting(response)
+        #expect(rows.count == 1)
+        #expect(rows.first?.title == nil)
+    }
+
     // reelShelfRenderer at the top level of the home feed response should produce
     // a VideoGroup containing isShort == true videos.
     @Test func reelShelfRendererProducesShorts() async {

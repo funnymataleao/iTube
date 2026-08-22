@@ -76,10 +76,12 @@ public actor CurrentQueueStore: UserDefaultsBackedStore {
         persist()
     }
 
-    /// Empties the queue and removes the UserDefaults entry.
+    /// Empties the queue, removes local persisted data, and publishes an empty
+    /// value to iCloud so another device cannot restore a stale queue.
     public func clear() {
         videos = []
         defaults.removeObject(forKey: Self.defaultsKey)
+        afterPersist()
     }
 
     /// Atomically replaces the queue with `newVideos`, preserving playlist order

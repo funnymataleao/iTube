@@ -8,6 +8,9 @@ public struct VideoGroup: Identifiable, Sendable {
     public var title: String?
     public var videos: [Video]
     public var nextPageToken: String?
+    /// Continuation for this specific horizontal Home shelf. This is separate
+    /// from `nextPageToken`, which advances the vertical list of Home shelves.
+    public var rowContinuationToken: String?
     public var action: Action
     /// How this group should be laid out in the UI.
     /// `.row` renders as a horizontal scrolling shelf (home feed rows);
@@ -31,6 +34,7 @@ public struct VideoGroup: Identifiable, Sendable {
         title: String? = nil,
         videos: [Video] = [],
         nextPageToken: String? = nil,
+        rowContinuationToken: String? = nil,
         action: Action = .replace,
         layout: Layout = .grid
     ) {
@@ -38,6 +42,7 @@ public struct VideoGroup: Identifiable, Sendable {
         self.title = title
         self.videos = videos
         self.nextPageToken = nextPageToken
+        self.rowContinuationToken = rowContinuationToken
         self.action = action
         self.layout = layout
     }

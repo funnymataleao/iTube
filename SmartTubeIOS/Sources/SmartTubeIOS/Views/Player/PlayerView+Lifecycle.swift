@@ -12,6 +12,27 @@ private let swipeLog = CrashlyticsLogger(category: "Player")
 // MARK: - PlayerView Lifecycle
 extension PlayerView {
 
+    #if os(tvOS)
+    /// PlayerInfo can come from a playback-only fallback whose Video omits feed
+    /// metadata. Preserve the richer source card so AVKit's native Info view keeps
+    /// its description, exact publication date, channel, and artwork.
+    var tvSystemVideo: Video {
+        let activeVideo = vm.currentVideo ?? video
+        var resolved = vm.playerInfo?.video.id == activeVideo.id
+            ? (vm.playerInfo?.video ?? activeVideo)
+            : activeVideo
+        if resolved.description?.isEmpty != false { resolved.description = activeVideo.description }
+        if resolved.thumbnailURL == nil { resolved.thumbnailURL = activeVideo.thumbnailURL }
+        if resolved.publishedAt == nil { resolved.publishedAt = activeVideo.publishedAt }
+        if resolved.exactPublishedAt == nil { resolved.exactPublishedAt = activeVideo.exactPublishedAt }
+        if resolved.publishedTimeText?.isEmpty != false { resolved.publishedTimeText = activeVideo.publishedTimeText }
+        if resolved.channelId?.isEmpty != false { resolved.channelId = activeVideo.channelId }
+        if resolved.channelTitle.isEmpty { resolved.channelTitle = activeVideo.channelTitle }
+        if resolved.viewCount == nil { resolved.viewCount = activeVideo.viewCount }
+        return resolved
+    }
+    #endif
+
     // MARK: - Title and back-button overlay
     //
     // Extracted from bodyWithLifecycleModifiers to keep the Swift type-checker from
@@ -61,6 +82,9 @@ extension PlayerView {
                     .allowsHitTesting(false)
             }
         }
+        #if os(tvOS)
+        .allowsHitTesting(false)
+        #endif
         #if !os(tvOS)
         .padding(.top, 60)
         #endif
@@ -92,14 +116,58 @@ extension PlayerView {
                     audioOnlyThumbnailOverlay
                 }
                 #elseif os(tvOS)
-                // PlayerAVLayerView: bare AVPlayerLayer without AVPlayerViewController.
-                // AVPlayerViewController (VideoPlayer) dominates the UIKit accessibility
-                // tree, making all overlaid SwiftUI elements invisible to XCUITest.
-                PlayerAVLayerView(player: vm.player, videoGravity: store.settings.videoGravityMode.avGravity)
-                .ignoresSafeArea()
-                .accessibilityHidden(true)
-                if vm.isAudioOnlyMode {
-                    audioOnlyThumbnailOverlay
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-minimal-avkit") {
+                    MinimalAVKitProbeView(
+                        player: vm.player,
+                        videoGravity: store.settings.videoGravityMode.avGravity
+                    )
+                    .ignoresSafeArea()
+                } else {
+                    TVSystemPlayerView(
+                        player: vm.player,
+                        videoGravity: store.settings.videoGravityMode.avGravity,
+                        video: tvSystemVideo,
+                        viewModel: vm,
+                        duration: vm.duration,
+                        chapters: vm.chapters,
+                        availableFormats: vm.availableFormats,
+                        selectedFormatID: vm.selectedFormat?.id,
+                        availableCaptions: vm.availableCaptions,
+                        selectedCaptionID: vm.selectedCaption?.id,
+                        isSignedIn: authService.isSignedIn,
+                        likeStatus: vm.likeStatus,
+                        isSubscribed: vm.isSubscribed,
+                        hasNext: vm.hasNext,
+                        captionText: vm.currentCaptionCue?.text,
+                        toastMessage: vm.toastMessage,
+                        isPlaylistPickerVisible: showPlaylistPicker,
+                        onDismiss: {
+                            vm.stop()
+                            dismiss()
+                        },
+                        onDismissPlaylistPicker: { showPlaylistPicker = false },
+                        onNext: { vm.playNext() },
+                        onOpenChannel: {
+                            guard let channelID = tvSystemVideo.channelId, !channelID.isEmpty else { return }
+                            NotificationCenter.default.post(
+                                name: .openChannel,
+                                object: nil,
+                                userInfo: ["channelId": channelID]
+                            )
+                            vm.stop()
+                            dismiss()
+                        },
+                        onLike: { vm.like() },
+                        onDislike: { vm.dislike() },
+                        onOpenPlaylistPicker: { showPlaylistPicker = true },
+                        onToggleSubscription: { vm.toggleSubscription() },
+                        onSelectFormat: { vm.selectFormat($0) },
+                        onSelectCaption: { vm.selectCaption($0) },
+                        onPrefetchQualities: {
+                            Task { await vm.prefetchAllQualityTracks() }
+                        }
+                    )
+                    .ignoresSafeArea()
                 }
                 #elseif os(macOS)
                 PlayerNSLayerView(player: vm.player, videoGravity: store.settings.videoGravityMode.avGravity)
@@ -179,7 +247,10 @@ extension PlayerView {
                     .ignoresSafeArea()
                 #endif
 
-                // Loading spinner
+                // AVPlayerViewController already owns the native buffering indicator on tvOS.
+                // Drawing our SwiftUI ProgressView above it produces two stacked spinners.
+                #if !os(tvOS)
+                // Loading spinner for the custom player surfaces.
                 if vm.isLoading {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -198,6 +269,7 @@ extension PlayerView {
                     .animation(.easeInOut(duration: 0.2), value: vm.isLoading)
                     .allowsHitTesting(false)
                 }
+                #endif
 
                 // Hold-to-speed badge — shown while user long-presses to boost to 2×
                 #if os(iOS) || os(tvOS)
@@ -208,6 +280,10 @@ extension PlayerView {
                 }
                 #endif
 
+                // AVPlayerViewController owns transport controls and focus on tvOS.
+                // Keeping the legacy SwiftUI controls above it produces duplicate UI
+                // and intercepts Siri Remote focus/navigation.
+                #if !os(tvOS)
                 // Custom overlay controls
                 if vm.controlsVisible {
                     makeControlsOverlay(size: geo.size, safeAreaInsets: geo.safeAreaInsets)
@@ -240,16 +316,17 @@ extension PlayerView {
                         )
                         #endif
                 }
+                #endif
 
                 // Error banner
+                #if !os(tvOS)
                 if let err = vm.error {
                     errorBanner(err)
                 }
-
-                // SponsorBlock skip toast
-                sponsorSkipToast
+                #endif
 
                 // Caption cue overlay — shown when a track is selected and a cue is active
+                #if !os(tvOS)
                 if let cue = vm.currentCaptionCue {
                     VStack(spacing: 0) {
                         Spacer()
@@ -263,6 +340,7 @@ extension PlayerView {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                 }
+                #endif
 
                 // End cards — shown in the final seconds of a video.
                 // Displayed regardless of controls visibility, matching official YouTube behaviour.
@@ -314,219 +392,16 @@ extension PlayerView {
     // Extracted from body so the compiled symbol for `body` shrinks from ~16 KB to ~100 bytes.
     // All lifecycle wiring (onAppear, onChange, tvOS focus, navigation, alerts) lives here
     // as its own compiled function, keeping the type tree out of PlayerView.body.
-    #if os(tvOS)
-    // Extracted from bodyWithLifecycleModifiers to prevent Swift type-checker timeout
-    // (error: "unable to type-check this expression in reasonable time").
-    // Each property is a separate type-inference scope so the cumulative generic depth
-    // of the modifier chain stays within the compiler threshold.
-    private var tvosPlayerGestureModifiers: some View {
-        playerContentView
-        // When no overlay is open, the outer view is the exclusive focus target and
-        // handles all remote input via onMoveCommand / onTapGesture.
-        // When an overlay (more menu, quality, speed, sleep timer) is visible, focus is
-        // yielded so the overlay's buttons are reachable by the Siri Remote.
-        // `.focusScope` + `.prefersDefaultFocus` ensure the ZStack actively claims
-        // default focus when pushed via NavigationStack, rather than waiting for the
-        // focus engine to pick a child element or leaving focus on the previous screen.
-        .focusScope(playerBodyNamespace)
-        .prefersDefaultFocus(in: playerBodyNamespace)
-        .focusable(!isAnyOverlayVisible && !isSkipToastActive)
-        .focused($playerFocused)
-        .modifier(ConditionalMoveCommand(enabled: !isAnyOverlayVisible && !isSkipToastActive) { direction in
-            swipeLog.debug("[tv] onMoveCommand dir=\(String(describing: direction)) isTransitioning=\(isTransitioning) highlighted=\(String(describing: highlightedControl))")
-            guard !isTransitioning else { return }
-            if let current = highlightedControl {
-                // Controls-nav mode: move the highlight between buttons.
-                highlightedControl = tvNextControl(from: current, direction: direction)
-                vm.showControls()
-            } else if vm.controlsVisible {
-                // Controls visible but nav not started yet.
-                // Left/right seeks directly (Siri Remote gen 1 edge-tap and D-pad seek UX);
-                // up/down enters control-navigation mode so the user can reach other buttons.
-                switch direction {
-                case .left:  vm.seekRelative(seconds: -Double(store.settings.seekBackSeconds))
-                case .right: vm.seekRelative(seconds: Double(store.settings.seekForwardSeconds))
-                default:
-                    highlightedControl = .playPause
-                    vm.showControls()
-                }
-            } else {
-                // Controls hidden: left/right seek, up/down shows controls.
-                switch direction {
-                case .left:  vm.seekRelative(seconds: -10)
-                case .right: vm.seekRelative(seconds: 10)
-                default:     vm.showControls(); highlightedControl = .playPause
-                }
-            }
-        })
-        .onTapGesture {
-            swipeLog.notice("[tv] onTapGesture (select) — isAnyOverlayVisible=\(isAnyOverlayVisible) highlighted=\(String(describing: highlightedControl)) controlsVisible=\(vm.controlsVisible)")
-            guard !isAnyOverlayVisible && !isSkipToastActive else { return }
-            if let current = highlightedControl {
-                tvActivateControl(current)
-            } else if vm.controlsVisible {
-                highlightedControl = .playPause
-                vm.showControls()
-            } else {
-                vm.showControls()
-                highlightedControl = .playPause
-            }
-        }
-        .onPlayPauseCommand { vm.togglePlayPause() }
-        .onExitCommand {
-            swipeLog.notice("[tv] onExitCommand — showMoreMenu=\(showMoreMenu) showQuality=\(showQualityPicker) showSpeed=\(showSpeedPicker) showSleep=\(showSleepTimerPicker) showCaption=\(showCaptionPicker) showAudio=\(showAudioTrackPicker) showDesc=\(showDescriptionSheet) showComments=\(showCommentsSheet) highlighted=\(String(describing: highlightedControl)) controlsVisible=\(vm.controlsVisible)")
-            // Dismiss any open overlay first — Menu/Back is the tvOS dismiss convention.
-            if showMoreMenu          { showMoreMenu = false; return }
-            if showQualityPicker     { showQualityPicker = false; return }
-            if showSpeedPicker       { showSpeedPicker = false; return }
-            if showSleepTimerPicker  { showSleepTimerPicker = false; return }
-            if showCaptionPicker     { showCaptionPicker = false; return }
-            if showAudioTrackPicker  { showAudioTrackPicker = false; return }
-            if showDescriptionSheet  { showDescriptionSheet = false; return }
-            if showCommentsSheet     { showCommentsSheet = false; return }
-            if highlightedControl != nil {
-                // Esc/Menu from nav mode → exit nav mode, controls stay until timer.
-                highlightedControl = nil
-            } else if vm.controlsVisible {
-                vm.toggleControls()
-            } else {
-                vm.stop()
-                dismiss()
-            }
-        }
-        .onChange(of: playerFocused) { _, focused in
-            swipeLog.notice("[tv] playerFocused changed → \(focused) isAnyOverlayVisible=\(isAnyOverlayVisible)")
-        }
-    }
-
-    // Second half of the tvOS modifier chain — split from tvosPlayerInputModifiers to
-    // keep each property's generic depth under the Swift type-checker threshold.
-    private var tvosPlayerOverlayModifiers: some View {
-        tvosPlayerGestureModifiers
-        .onChange(of: showMoreMenu) { _, visible in
-            swipeLog.notice("[tv] showMoreMenu changed → \(visible) isAnyOverlayVisible=\(isAnyOverlayVisible) playerFocused=\(playerFocused)")
-            if visible {
-                // prefersDefaultFocus is consulted only when focus ENTERS a scope naturally.
-                // Since the overlay opens programmatically, we must explicitly route focus to
-                // the speed row so the Siri Remote Select button works immediately.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000) // one render cycle (~50 ms)
-                    moreMenuFocusedRow = .speed
-                    swipeLog.notice("[tv] moreMenuFocusedRow set → .speed")
-                }
-            } else {
-                moreMenuFocusedRow = nil
-            }
-        }
-        .onChange(of: showSpeedPicker) { _, visible in
-            swipeLog.notice("[tv] showSpeedPicker changed → \(visible)")
-            if visible {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    speedPickerFocused = true
-                    swipeLog.notice("[tv] speedPickerFocused set → true")
-                }
-            }
-        }
-        .onChange(of: showQualityPicker) { _, visible in
-            swipeLog.notice("[tv] showQualityPicker changed → \(visible)")
-            if visible {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    qualityPickerFocused = true
-                    swipeLog.notice("[tv] qualityPickerFocused set → true")
-                }
-            }
-        }
-        .onChange(of: showSleepTimerPicker) { _, visible in
-            swipeLog.notice("[tv] showSleepTimerPicker changed → \(visible)")
-            if visible {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    sleepTimerPickerFocused = true
-                    swipeLog.notice("[tv] sleepTimerPickerFocused set → true")
-                }
-            }
-        }
-        .onChange(of: showCaptionPicker) { _, visible in
-            swipeLog.notice("[tv] showCaptionPicker changed → \(visible)")
-            if visible {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    captionPickerFocused = true
-                    swipeLog.notice("[tv] captionPickerFocused set → true")
-                }
-            } else {
-                captionPickerFocused = false
-            }
-        }
-    }
-
-    // Third split of the tvOS modifier chain.
-    private var tvosPlayerChangeModifiers: some View {
-        tvosPlayerOverlayModifiers
-        .onChange(of: showAudioTrackPicker) { _, visible in
-            swipeLog.notice("[tv] showAudioTrackPicker changed → \(visible)")
-            if visible {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    audioTrackPickerFocused = true
-                    swipeLog.notice("[tv] audioTrackPickerFocused set → true")
-                }
-            } else {
-                audioTrackPickerFocused = false
-            }
-        }
-        .onChange(of: vm.currentToastSegment) { _, segment in
-            swipeLog.notice("[tv] currentToastSegment changed → \(segment == nil ? "nil" : segment!.category.rawValue)")
-            if segment != nil {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    skipToastButtonFocused = true
-                    swipeLog.notice("[tv] skipToastButtonFocused set → true")
-                }
-            } else {
-                skipToastButtonFocused = false
-                if !isAnyOverlayVisible {
-                    playerFocused = true
-                }
-            }
-        }
-        .onChange(of: vm.controlsVisible) { _, visible in
-            swipeLog.debug("[tv] controlsVisible changed → \(visible) highlighted=\(String(describing: highlightedControl)) isAnyOverlayVisible=\(isAnyOverlayVisible)")
-            if !visible {
-                highlightedControl = nil
-                // Only reclaim player focus when no overlay is open.
-                // focusScope(moreMenuNamespace) keeps focus inside the menu when
-                // controls hide, so no re-assertion is needed (and re-asserting
-                // would steal focus back from whichever row the user navigated to).
-                if !isAnyOverlayVisible {
-                    playerFocused = true
-                }
-            }
-        }
-        .onChange(of: isAnyOverlayVisible) { _, overlayVisible in
-            swipeLog.notice("[tv] isAnyOverlayVisible changed → \(overlayVisible) — moreMenu=\(showMoreMenu) quality=\(showQualityPicker) speed=\(showSpeedPicker) sleep=\(showSleepTimerPicker)")
-            if overlayVisible {
-                // Pause the controls auto-hide timer so transport controls stay
-                // visible behind the overlay while it is open.
-                vm.cancelControlsHide()
-            } else {
-                // Overlay dismissed — reclaim focus and clear nav state.
-                highlightedControl = nil
-                playerFocused = true
-            }
-        }
-    }
-    #endif
-
     var bodyWithLifecycleModifiers: some View {
         // Group branches by platform so each branch has its own type-inference scope.
         // Platform-specific toolbar and nav-bar modifiers live inside each branch to
         // avoid conditional-compilation mid-chain (not allowed outside @ViewBuilder).
         Group {
             #if os(tvOS)
-            tvosPlayerChangeModifiers
+            // AVPlayerViewController must own focus and Siri Remote gestures.
+            // Wrapping it in the legacy custom focusable/onMoveCommand chain steals
+            // directional events from AVKit and breaks native scrubbing/navigation.
+            playerContentView
                 .toolbar(.hidden, for: .tabBar)
             #elseif os(iOS)
             playerContentView
@@ -547,9 +422,6 @@ extension PlayerView {
         .onAppear {
             swipeLog.notice("[PlayerView] onAppear id=\(video.id)")
             isVisible = true
-            #if os(tvOS)
-            playerFocused = true
-            #endif
             #if os(iOS)
             // fix12: Post UIAccessibility.screenChanged so XCTest's accessibility engine
             // immediately re-checks the hierarchy after this view appears. Without this,
@@ -612,6 +484,9 @@ extension PlayerView {
                 vm.cancelControlsHide()
             }
             #else
+            vm.setPlaybackSpeed(store.settings.playbackSpeed)
+            vm.updateSettings(store.settings)
+            vm.updateAuthToken(authService.accessToken)
             if vm.currentVideoId == video.id {
                 // Spurious appear (e.g. a sheet temporarily covered us) — only resume
                 // if playback was active before the view disappeared, so an intentional
@@ -619,12 +494,10 @@ extension PlayerView {
                 if vm.wasPlayingBeforeSuspend {
                     vm.resume()
                 }
+                vm.updateSubscriptionState()
             } else {
                 vm.load(video: video)
             }
-            vm.setPlaybackSpeed(store.settings.playbackSpeed)
-            vm.updateSettings(store.settings)
-            vm.updateAuthToken(authService.accessToken)
             // UI testing only: force-show controls so the test can find player.nextBtn.
             if ProcessInfo.processInfo.arguments.contains("--uitesting-show-controls") {
                 swipeLog.notice("[PlayerView] --uitesting-show-controls (non-iOS) — showing controls")
@@ -662,6 +535,20 @@ extension PlayerView {
             }
             #endif
         }
+        .onChange(of: authService.accessToken) { _, token in
+            // A player can remain alive as a mini-player while the user signs out
+            // in Settings. Propagate the mode change immediately so no cached or
+            // in-flight SponsorBlock segment can still be used.
+            vm.updateAuthToken(token)
+        }
+        #if os(tvOS)
+        .onChange(of: vm.error != nil) { _, hasTerminalPlaybackError in
+            guard hasTerminalPlaybackError else { return }
+            swipeLog.error("[PlayerView] terminal playback error — dismissing tvOS player")
+            vm.stop()
+            dismiss()
+        }
+        #endif
         .onDisappear {
             swipeLog.notice("[PlayerView] onDisappear id=\(video.id) isInBackground=\(isInBackground)")
             isVisible = false
@@ -766,6 +653,9 @@ extension PlayerView {
             swipeLog.notice("[orientation] landscapeLocked: \(oldValue) → \(isLocked) alwaysLandscape=\(alwaysLandscape) physicallyLandscape=\(physicallyLandscape) isLandscape: \(prevIsLandscape) → \(newIsLandscape) playerIsActive: \(prevPlayerIsActive) → \(isLocked || alwaysLandscape)")
         }
         #endif
+        // On tvOS, Go to Channel no longer writes this binding: it dismisses the
+        // full-screen player and routes through the main app stack instead. The
+        // destination remains here for the platform-specific non-tvOS controls.
         .navigationDestination(item: $channelDestination) { dest in
             ChannelView(channelId: dest.channelId)
         }
@@ -826,18 +716,7 @@ extension PlayerView {
             showAudioTrackPicker: $showAudioTrackPicker,
             showSleepTimerPicker: $showSleepTimerPicker
         )
-        #elseif os(tvOS)
-        PlayerControlsOverlay(
-            size: size,
-            safeAreaInsets: safeAreaInsets,
-            video: video,
-            controlScale: controlScale,
-            showMoreMenu: $showMoreMenu,
-            channelDestination: $channelDestination,
-            vm: vm,
-            highlightedControl: $highlightedControl
-        )
-        #else
+        #elseif os(macOS)
         PlayerControlsOverlay(
             size: size,
             safeAreaInsets: safeAreaInsets,
@@ -851,6 +730,8 @@ extension PlayerView {
             showAudioTrackPicker: $showAudioTrackPicker,
             showSleepTimerPicker: $showSleepTimerPicker
         )
+        #else
+        EmptyView()
         #endif
     }
 

@@ -48,7 +48,8 @@ extension TOSPlayerViewModel {
     /// a live fetch, whose result is stored in `VideoPreloadCache` so the standard
     /// player and any future TOS session can reuse it too.
     func fetchSponsorSegments() async {
-        guard settings.sponsorBlockEnabled,
+        guard let authSnapshot = sponsorBlockAuthToken,
+              settings.sponsorBlockEnabled,
               !settings.activeSponsorCategories.isEmpty
         else { return }
 
@@ -110,6 +111,10 @@ extension TOSPlayerViewModel {
         }
 
         let cached = await VideoPreloadCache.shared.consume(videoId: videoId)
+        guard !Task.isCancelled,
+              sponsorBlockAuthToken == authSnapshot,
+              self.videoId == videoId
+        else { return }
         if let cachedSegments = cached.sponsorSegments {
             let isStale = cached.staleFields.contains(.sponsorSegments)
             sponsorSegments = filtered(cachedSegments)
@@ -120,8 +125,16 @@ extension TOSPlayerViewModel {
             Task(priority: .background) { [weak self] in
                 guard let self else { return }
                 let fresh = await self.sponsorService.fetchSegments(videoId: videoId, categories: categories)
+                guard !Task.isCancelled,
+                      self.sponsorBlockAuthToken == authSnapshot,
+                      self.videoId == videoId
+                else { return }
                 await VideoPreloadCache.shared.store(sponsorSegments: fresh, for: videoId)
                 await MainActor.run {
+                    guard !Task.isCancelled,
+                          self.sponsorBlockAuthToken == authSnapshot,
+                          self.videoId == videoId
+                    else { return }
                     self.sponsorSegments = filtered(fresh)
                     tosLog.notice("[SponsorBlock] revalidated — \(self.sponsorSegments.count) segment(s) for \(videoId)")
                 }
@@ -131,7 +144,15 @@ extension TOSPlayerViewModel {
 
         // Full miss — fetch live, store for reuse, then apply.
         let segments = await sponsorService.fetchSegments(videoId: videoId, categories: categories)
+        guard !Task.isCancelled,
+              sponsorBlockAuthToken == authSnapshot,
+              self.videoId == videoId
+        else { return }
         await VideoPreloadCache.shared.store(sponsorSegments: segments, for: videoId)
+        guard !Task.isCancelled,
+              sponsorBlockAuthToken == authSnapshot,
+              self.videoId == videoId
+        else { return }
         sponsorSegments = filtered(segments)
         tosLog.notice("[SponsorBlock] cache MISS — fetched & applied \(self.sponsorSegments.count) of \(segments.count) loaded segment(s) for \(videoId)")
     }
@@ -140,6 +161,12 @@ extension TOSPlayerViewModel {
     /// auto-skips, shows a toast, or clears any active toast — driven by every
     /// "tick" message (see `handleScriptMessage`'s "tick" case).
     func checkSponsorSkip(at time: Double) {
+        guard sponsorBlockAuthToken != nil else {
+            currentToastSegment = nil
+            activeSkipEnd = nil
+            pendingSkipLog = nil
+            return
+        }
         if let end = activeSkipEnd, time >= end { activeSkipEnd = nil }
 
         let decision = SponsorBlockDecisionEngine.decide(

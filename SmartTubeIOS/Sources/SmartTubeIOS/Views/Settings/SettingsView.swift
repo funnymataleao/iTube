@@ -12,8 +12,15 @@ public struct SettingsView: View {
     @Environment(SettingsStore.self) private var store
     @State private var showSignIn = false
     @State private var reportSent = false
+    @State private var showResetConfirmation = false
+    @State private var showDeleteDataConfirmation = false
+    @State private var isDeletingLocalData = false
     #if os(tvOS)
-    @State private var showGithubQR = false
+    @Environment(AppAccessStore.self) private var accessStore
+    @State private var showSourceCodeQR = false
+    @State private var showPlans = false
+    @State private var showLegalAndSupport = false
+    private let tvSettingsContentWidth: CGFloat = 1080
     #endif
 
     public init() {}
@@ -21,6 +28,13 @@ public struct SettingsView: View {
     public var body: some View {
         Form {
             accountSection
+            #if os(tvOS)
+            membershipSection
+            personalTVPlaybackSection
+            personalTVContentSection
+            personalTVAppearanceAndPrivacySection
+            personalTVAdvancedPlaybackSection
+            #else
             playerSection
             generalSection
             uiSection
@@ -29,10 +43,17 @@ public struct SettingsView: View {
             #if os(macOS)
             experimentalSection
             #endif
+            #endif
             aboutSection
         }
         #if os(macOS)
         .formStyle(.grouped)
+        #endif
+        #if os(tvOS)
+        // Match the visual width of the five-item top tab bar while preserving
+        // the native Form focus, scrolling, and section behavior.
+        .frame(maxWidth: tvSettingsContentWidth)
+        .frame(maxWidth: .infinity)
         #endif
         // Hide the blank navigation bar on iOS and tvOS — a visible nav bar on tvOS
         // conflicts with the TabView tab bar scroll-hide animation (issue #102 / gh-34).
@@ -41,11 +62,176 @@ public struct SettingsView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         #if os(tvOS)
-        .sheet(isPresented: $showGithubQR) {
-            GitHubQRView()
+        .sheet(isPresented: $showSourceCodeQR) {
+            SourceCodeQRView()
+        }
+        .sheet(isPresented: $showPlans) {
+            TVPaywallView(allowsDismissal: true)
+                .environment(accessStore)
+        }
+        .sheet(isPresented: $showLegalAndSupport) {
+            TVLegalAndSupportView()
+        }
+        .confirmationDialog(
+            "Reset all settings?",
+            isPresented: $showResetConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Settings", role: .destructive) {
+                store.reset()
+            }
+        } message: {
+            Text("This restores playback, content, and interface preferences. Your Google account stays signed in.")
+        }
+        .confirmationDialog(
+            "Disconnect Google and delete local data?",
+            isPresented: $showDeleteDataConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Disconnect & Delete", role: .destructive) {
+                Task { await deleteLocalAccountData() }
+            }
+        } message: {
+            Text("This signs out, requests revocation of the Google grant, and deletes local follows, search and watch history, playback positions, feeds, queue, and cached account data. App Store purchases and app preferences remain.")
         }
         #endif
     }
+
+    #if os(tvOS)
+    // MARK: - Personal tvOS settings
+
+    private var membershipSection: some View {
+        Section {
+            LabeledContent("Access", value: accessStore.statusText)
+                .accessibilityIdentifier("settings.membershipStatus")
+
+            Button {
+                showPlans = true
+            } label: {
+                Label(membershipActionTitle, systemImage: "play.tv.fill")
+            }
+            .accessibilityIdentifier("settings.viewPlansButton")
+
+            Button {
+                Task { await accessStore.restorePurchases() }
+            } label: {
+                Label(
+                    accessStore.isRestoring ? "Restoring…" : "Restore Purchases",
+                    systemImage: "arrow.clockwise"
+                )
+            }
+            .disabled(accessStore.isRestoring || accessStore.purchasingProductID != nil)
+            .accessibilityIdentifier("settings.restorePurchasesButton")
+
+            Button {
+                showLegalAndSupport = true
+            } label: {
+                Label("Privacy, Terms & Support", systemImage: "doc.text")
+            }
+            .accessibilityIdentifier("settings.legalButton")
+
+            if let message = accessStore.message {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("iTube Plus")
+        } footer: {
+            Text("Manage or cancel a subscription in Apple TV Settings → Profiles and Accounts → your profile → Subscriptions.")
+        }
+    }
+
+    private var membershipActionTitle: String {
+        if case .entitled = accessStore.accessState {
+            return String(localized: "Purchase Details", bundle: .module)
+        }
+        return String(localized: "View Plans", bundle: .module)
+    }
+
+    private var personalTVPlaybackSection: some View {
+        @Bindable var store = store
+        return Section("Playback") {
+            Toggle("Play Next Video", isOn: $store.settings.autoplayEnabled)
+                .accessibilityIdentifier("settings.autoplayToggle")
+            Toggle("Loop Current Video", isOn: $store.settings.loopEnabled)
+                .accessibilityIdentifier("settings.loopToggle")
+            Toggle("Shuffle Recommendations", isOn: $store.settings.shuffleEnabled)
+                .accessibilityIdentifier("settings.shuffleToggle")
+
+            Picker("Skip Back", selection: $store.settings.seekBackSeconds) {
+                ForEach(AppSettings.availableSeekOptions, id: \.self) { seconds in
+                    Text("\(seconds) seconds").tag(seconds)
+                }
+            }
+            .accessibilityIdentifier("settings.seekBackRow")
+
+            Picker("Skip Forward", selection: $store.settings.seekForwardSeconds) {
+                ForEach(AppSettings.availableSeekOptions, id: \.self) { seconds in
+                    Text("\(seconds) seconds").tag(seconds)
+                }
+            }
+            .accessibilityIdentifier("settings.seekForwardRow")
+
+            Picker("Video Fit", selection: $store.settings.videoGravityMode) {
+                Text("Fit").tag(AppSettings.VideoGravityMode.fit)
+                Text("Fill").tag(AppSettings.VideoGravityMode.fill)
+            }
+            .accessibilityIdentifier("settings.videoGravityPicker")
+        }
+    }
+
+    private var personalTVContentSection: some View {
+        @Bindable var store = store
+        return Section {
+            Toggle("SponsorBlock", isOn: $store.settings.sponsorBlockEnabled)
+                .accessibilityIdentifier("settings.sponsorBlockToggle")
+            Toggle("DeArrow", isOn: $store.settings.deArrowEnabled)
+                .accessibilityIdentifier("settings.deArrowToggle")
+            Toggle("Hide Shorts", isOn: $store.settings.hideShorts)
+                .accessibilityIdentifier("settings.hideShortsToggle")
+            Toggle("Hide Live Shorts", isOn: $store.settings.hideLiveShorts)
+                .accessibilityIdentifier("settings.hideLiveShortsToggle")
+            Toggle("Hide Upcoming Premieres", isOn: $store.settings.hideVideoPremieres)
+                .accessibilityIdentifier("settings.hideVideoPremieresToggle")
+        } header: {
+            Text("Content")
+        } footer: {
+            Text("SponsorBlock affects playback. Content filters apply where the matching video type appears.")
+        }
+    }
+
+    private var personalTVAppearanceAndPrivacySection: some View {
+        @Bindable var store = store
+        return Section {
+            Picker("Appearance", selection: $store.settings.themeName) {
+                ForEach(AppSettings.ThemeName.allCases, id: \.self) { theme in
+                    Text(theme.rawValue).tag(theme)
+                }
+            }
+            .accessibilityIdentifier("settings.themeRow")
+            Picker("Watch History", selection: $store.settings.historyState) {
+                Text("On").tag(AppSettings.HistoryState.enabled)
+                Text("Off").tag(AppSettings.HistoryState.disabled)
+            }
+            .accessibilityIdentifier("settings.historyPicker")
+        } header: {
+            Text("Appearance & Privacy")
+        }
+    }
+
+    private var personalTVAdvancedPlaybackSection: some View {
+        @Bindable var store = store
+        return Section {
+            Toggle("Prefer H.264 Video", isOn: $store.settings.preferH264)
+                .accessibilityIdentifier("settings.preferH264Toggle")
+        } header: {
+            Text("Advanced Playback")
+        } footer: {
+            Text("Use H.264 only if videos have playback problems. It can limit available resolutions.")
+        }
+    }
+    #endif
 
     // MARK: - Account
 
@@ -79,8 +265,38 @@ public struct SettingsView: View {
                     .accessibilityIdentifier("settings.signInButton")
                     .sheet(isPresented: $showSignIn) { SignInView() }
             }
+            #if os(tvOS)
+            Button(role: .destructive) {
+                showDeleteDataConfirmation = true
+            } label: {
+                Label(
+                    isDeletingLocalData ? "Deleting Local Data…" : "Disconnect & Delete Local Data",
+                    systemImage: "trash"
+                )
+            }
+            .disabled(isDeletingLocalData)
+            .accessibilityIdentifier("settings.deleteLocalDataButton")
+            #endif
         }
     }
+
+    #if os(tvOS)
+    @MainActor
+    private func deleteLocalAccountData() async {
+        guard !isDeletingLocalData else { return }
+        isDeletingLocalData = true
+        defer { isDeletingLocalData = false }
+
+        auth.signOut()
+        await SearchHistoryStore.shared.clear()
+        await RecentWatchHistoryStore.shared.clear()
+        await VideoStateStore.shared.clearAll()
+        await LocalSubscriptionStore.shared.clear()
+        await RSSFeedStore.shared.clear()
+        await CurrentQueueStore.shared.clear()
+        await VideoPreloadCache.shared.evictAuthSensitiveData()
+    }
+    #endif
 
     // MARK: - Player
 
@@ -185,8 +401,6 @@ public struct SettingsView: View {
                 Text("Enabled").tag(AppSettings.HistoryState.enabled)
                 Text("Disabled").tag(AppSettings.HistoryState.disabled)
             }
-            Toggle("Sync to iCloud", isOn: $store.settings.iCloudSyncEnabled)
-                .accessibilityIdentifier("settings.iCloudSyncToggle")
         }
     }
 
@@ -201,15 +415,13 @@ public struct SettingsView: View {
                 }
             }
             .accessibilityIdentifier("settings.themeRow")
-            Toggle("Hide Shorts", isOn: $store.settings.hideShorts)
-                .accessibilityIdentifier("settings.hideShortsToggle")
-            Toggle("Hide Live Shorts", isOn: $store.settings.hideLiveShorts)
-                .accessibilityIdentifier("settings.hideLiveShortsToggle")
             Toggle("Hide Video Premieres", isOn: $store.settings.hideVideoPremieres)
                 .accessibilityIdentifier("settings.hideVideoPremieresToggle")
             Toggle("Per-Device Recommendations", isOn: $store.settings.perDeviceRecommendationsEnabled)
                 .accessibilityIdentifier("settings.perDeviceRecommendationsToggle")
+            #if !os(tvOS)
             Toggle("Compact Thumbnails", isOn: $store.settings.compactThumbnails)
+            #endif
             NavigationLink("Visible Sections") {
                 SectionsSettingsView()
                     .environment(store)
@@ -299,18 +511,27 @@ public struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
+            #if os(tvOS)
             LabeledContent("Version", value: appVersion)
+            #else
+            LabeledContent("Version", value: appVersion)
+            #endif
             #if os(tvOS)
             Button {
-                showGithubQR = true
+                showSourceCodeQR = true
             } label: {
-                Label("View on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                Label("Source Code & Acknowledgements", systemImage: "chevron.left.forwardslash.chevron.right")
             }
+            Button("Reset Settings", role: .destructive) {
+                showResetConfirmation = true
+            }
+            .accessibilityIdentifier("settings.resetAllButton")
             #else
-            Link(destination: URL(string: "https://github.com/milika/SmartTubeIOS")!) {
+            Link(destination: URL(string: "https://github.com/funnymataleao/iTube")!) {
                 Label("View on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
             }
             #endif
+            #if !os(tvOS)
             Button {
                 CrashlyticsLogger.sendDiagnosticReport()
                 reportSent = true
@@ -326,8 +547,13 @@ public struct SettingsView: View {
             .accessibilityIdentifier("settings.sendDiagnosticReportButton")
             Button("Reset All Settings", role: .destructive) { store.reset() }
                 .accessibilityIdentifier("settings.resetAllButton")
+            #endif
         } header: {
+            #if os(tvOS)
+            Text("About iTube")
+            #else
             Text("About")
+            #endif
         }
     }
 
@@ -340,13 +566,13 @@ public struct SettingsView: View {
     }
 }
 
-// MARK: - GitHubQRView (tvOS)
+// MARK: - SourceCodeQRView (tvOS)
 
 #if os(tvOS)
-private struct GitHubQRView: View {
+private struct SourceCodeQRView: View {
     @Environment(\.dismiss) private var dismiss
 
-    private let githubURL = "https://github.com/milika/SmartTubeIOS"
+    private let githubURL = "https://github.com/funnymataleao/iTube"
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -358,10 +584,10 @@ private struct GitHubQRView: View {
                         .font(.system(size: 56))
                         .foregroundStyle(.white)
 
-                    Text("SmartTube on GitHub")
+                    Text("iTube Source Code")
                         .font(.largeTitle).fontWeight(.bold)
 
-                    Text("Scan the QR code with your phone to view the project on GitHub.")
+                    Text("Scan the QR code to view the source code, upstream project, and acknowledgements.")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -399,7 +625,7 @@ private struct GitHubQRView: View {
 struct SectionsSettingsView: View {
     @Environment(SettingsStore.self) private var store
 
-    private let allSections = BrowseSection.allSections
+    private let allSections = BrowseSection.allSections.filter { $0.type != .shorts }
 
     var body: some View {
         @Bindable var store = store

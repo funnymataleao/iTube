@@ -185,8 +185,24 @@ public final class PlaybackViewModel {
     public var likeStatus: LikeStatus { likeDislike.likeStatus }
     public func like() { likeDislike.like(videoId: currentVideo?.id) }
     public func dislike() { likeDislike.dislike(videoId: currentVideo?.id) }
+    /// Optimistic state for the authenticated YouTube "Watch Later" playlist.
+    /// It is exact after an action in this playback session and when playback
+    /// originated from the Watch Later playlist.
+    public internal(set) var isInWatchLater: Bool = false
+    public internal(set) var isUpdatingWatchLater: Bool = false
+    /// Subscription state for the current video's channel.
+    /// Backed by LocalSubscriptionStore for offline channel follow/unfollow.
+    public internal(set) var isSubscribed: Bool = false
+    /// Prevents repeated remote mutations while a subscribe/unsubscribe request is active.
+    public internal(set) var isUpdatingSubscription: Bool = false
+    /// Owns the latest subscription-state lookup so stale responses cannot overwrite a tap.
+    @ObservationIgnored var subscriptionStateTask: Task<Void, Never>?
+    /// Invalidates state lookups and mutation completions that belong to an older video/action.
+    @ObservationIgnored var subscriptionRevision: UInt = 0
     public internal(set) var statsForNerdsVisible: Bool = false
     public internal(set) var statsSnapshot: StatsForNerdsSnapshot = .empty
+    /// Public like count text from the current video, when YouTube exposes it.
+    public internal(set) var likeCountText: String?
     /// End-screen cards to overlay during the final seconds of the video.
     public internal(set) var endCards: [EndCard] = []
     /// When `true`, the player loads only the audio-only adaptive stream and displays
@@ -343,6 +359,9 @@ public final class PlaybackViewModel {
     /// Manages watch-history state: position saving, playback-started ping,
     /// and watchtime segment reporting. See WatchtimeTracker.
     var tracker: WatchtimeTracker
+    /// Prevents pause/resume rate changes from recording the same playback session
+    /// more than once. Reset for every accepted `load(video:)` call.
+    var historyPlaybackStartedVideoID: String?
 
     // AVMediaSelectionGroup (forwarded to AudioTrackManager)
     @ObservationIgnored nonisolated var audioSelectionGroup: AVMediaSelectionGroup? {
@@ -414,11 +433,11 @@ public final class PlaybackViewModel {
     // causes EXC_BREAKPOINT. Mirror the dict locally instead.
     @ObservationIgnored var nowPlayingInfoCache: [String: Any] = [:]
     // Cached thumbnail for MPMediaItemArtwork. Written from a background URLSession task;
-    // read from MediaPlayer's internal artwork-closure thread. nonisolated(unsafe) is
+    // read from MediaPlayer's internal artwork-closure thread. @ObservationIgnored is
     // intentional: UIImage is immutable after creation and the worst-case race is that
     // MediaPlayer gets nil on the first render (it will retry on the next state update).
     #if canImport(UIKit)
-    nonisolated(unsafe) var cachedArtwork: UIImage? = nil
+    @ObservationIgnored var cachedArtwork: UIImage? = nil
     @ObservationIgnored var cachedArtworkVideoID: String? = nil
     #endif
 
@@ -430,6 +449,7 @@ public final class PlaybackViewModel {
     public var settings: AppSettings
     var hasAuthToken: Bool = false
     var currentAuthToken: String? = nil
+    @ObservationIgnored var authUpdateRevision: UInt = 0
 
     public init(
         api: InnerTubeAPI = InnerTubeAPI(),
@@ -497,7 +517,7 @@ public final class PlaybackViewModel {
         rateObserver?.invalidate()
         airPlayObserver?.invalidate()
         if let obs = audioSessionObserver { NotificationCenter.default.removeObserver(obs) }
-        #if canImport(UIKit)
+        #if canImport(UIKit) && !os(tvOS)
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.removeTarget(nil)
         center.pauseCommand.removeTarget(nil)
@@ -607,6 +627,114 @@ extension PlaybackViewModel: QualityEventHandler {
             activeTitle: active.title
         )
         toastMessage = "⚠️ Wrong video loaded — report sent"
+    }
+
+    // MARK: - Subscription
+
+    /// Toggles the authenticated YouTube subscription for the current video's channel.
+    /// The local store is updated only after YouTube confirms the operation.
+    public func toggleSubscription() {
+        guard !isUpdatingSubscription else { return }
+        guard let video = currentVideo,
+              let channelId = video.channelId,
+              !channelId.isEmpty else {
+            toastMessage = String(localized: "Couldn't identify this channel.", bundle: .module)
+            playerLog.notice("[subscription] toggleSubscription called but no valid channelId")
+            return
+        }
+
+        subscriptionStateTask?.cancel()
+        subscriptionStateTask = nil
+        subscriptionRevision &+= 1
+        let revision = subscriptionRevision
+        let previousState = isSubscribed
+        let requestedState = !previousState
+        isSubscribed = requestedState
+        isUpdatingSubscription = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let store = LocalSubscriptionStore.shared
+            do {
+                await self.api.setAuthToken(self.currentAuthToken)
+                if requestedState {
+                    try await self.api.subscribe(channelId: channelId)
+                    await store.follow(LocalChannel(id: channelId, title: video.channelTitle, thumbnailURL: nil))
+                } else {
+                    try await self.api.unsubscribe(channelId: channelId)
+                    await store.unfollow(channelId: channelId)
+                }
+
+                guard self.subscriptionRevision == revision,
+                      self.currentVideo?.id == video.id else { return }
+                self.isSubscribed = requestedState
+                self.toastMessage = requestedState
+                    ? "Subscribed to \(video.channelTitle)"
+                    : "Unsubscribed from \(video.channelTitle)"
+                playerLog.notice("[subscription] \(requestedState ? "Subscribed to" : "Unsubscribed from") channelId=\(channelId)")
+            } catch {
+                guard self.subscriptionRevision == revision,
+                      self.currentVideo?.id == video.id else { return }
+                self.isSubscribed = previousState
+                self.toastMessage = Self.subscriptionUserMessage(for: error)
+                playerLog.error("[subscription] request failed: \(String(describing: error))")
+            }
+
+            if self.subscriptionRevision == revision {
+                self.isUpdatingSubscription = false
+            }
+        }
+    }
+
+    /// Updates subscription state when a new video is loaded.
+    func updateSubscriptionState() {
+        subscriptionStateTask?.cancel()
+        subscriptionRevision &+= 1
+        let revision = subscriptionRevision
+        isUpdatingSubscription = false
+
+        guard let video = currentVideo,
+              let channelId = video.channelId,
+              !channelId.isEmpty else {
+            isSubscribed = false
+            return
+        }
+
+        subscriptionStateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let store = LocalSubscriptionStore.shared
+            let localState = await store.isFollowing(channelId)
+            guard !Task.isCancelled,
+                  self.subscriptionRevision == revision,
+                  self.currentVideo?.id == video.id else { return }
+            self.isSubscribed = localState
+            guard self.hasAuthToken else { return }
+            do {
+                await self.api.setAuthToken(self.currentAuthToken)
+                let remoteState = try await self.api.isSubscribed(to: channelId)
+                guard !Task.isCancelled,
+                      self.subscriptionRevision == revision,
+                      self.currentVideo?.id == video.id else { return }
+                self.isSubscribed = remoteState
+                if remoteState {
+                    await store.follow(LocalChannel(id: channelId, title: video.channelTitle, thumbnailURL: nil))
+                } else {
+                    await store.unfollow(channelId: channelId)
+                }
+            } catch {
+                guard !Task.isCancelled,
+                      self.subscriptionRevision == revision,
+                      self.currentVideo?.id == video.id else { return }
+                playerLog.notice("[subscription] remote state unavailable; using local state: \(String(describing: error))")
+            }
+        }
+    }
+
+    private static func subscriptionUserMessage(for error: Error) -> String {
+        if case .notAuthenticated = error as? APIError {
+            return String(localized: "Sign in to subscribe.", bundle: .module)
+        }
+        return String(localized: "Couldn't update the subscription. Try again.", bundle: .module)
     }
 }
 

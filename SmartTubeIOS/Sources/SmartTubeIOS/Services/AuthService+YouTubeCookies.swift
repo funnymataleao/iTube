@@ -42,13 +42,11 @@ extension AuthService {
         // scope is present. Required for the MultiBearer Multilogin request format.
         if let infoURL = URL(string: "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=\(token)"),
            let (infoData, _) = try? await URLSession.shared.data(from: infoURL) {
-            let infoStr = String(data: infoData, encoding: .utf8) ?? "<non-UTF8>"
-            authLog.notice("[cookies] tokeninfo=\(infoStr)")
             // Extract gaiaId from `sub` claim (only present when openid scope is in token)
             if let infoJSON = try? JSONSerialization.jsonObject(with: infoData) as? [String: Any],
                let sub = infoJSON["sub"] as? String, !sub.isEmpty {
                 gaiaId = sub
-                authLog.notice("[cookies] gaiaId=\(sub) — MultiBearer Multilogin enabled")
+                authLog.notice("[cookies] account identifier available — MultiBearer Multilogin enabled")
             } else {
                 authLog.notice("[cookies] gaiaId not in tokeninfo — token missing openid scope; need re-sign-in")
             }
@@ -75,8 +73,7 @@ extension AuthService {
               let location = http1.value(forHTTPHeaderField: "Location"),
               let mergeURL = URL(string: location) else {
             let code = (response1 as? HTTPURLResponse)?.statusCode ?? 0
-            let wwwAuth = (response1 as? HTTPURLResponse)?.value(forHTTPHeaderField: "WWW-Authenticate") ?? "none"
-            authLog.notice("[cookies] OAuthLogin did not redirect (HTTP \(code)) WWW-Authenticate=\(wwwAuth) — trying Multilogin fallback")
+            authLog.notice("[cookies] OAuthLogin did not redirect (HTTP \(code)) — trying Multilogin fallback")
             await fetchSAPISIDViaMultilogin(token: token)
             return
         }
@@ -124,7 +121,7 @@ extension AuthService {
         // gaiaId is the numeric Gaia ID (OIDC `sub` claim) from tokeninfo when openid scope is present.
         if let gid = gaiaId, !gid.isEmpty {
             request.setValue("MultiBearer \(token):\(gid)", forHTTPHeaderField: "Authorization")
-            authLog.notice("[cookies] Multilogin MultiBearer with gaiaId=\(gid)")
+            authLog.notice("[cookies] Multilogin MultiBearer with account identifier")
         } else {
             // Fallback: old Bearer format — likely to fail (INVALID_INPUT) without gaiaId.
             // User must sign out + sign in to get an openid-scoped token.
@@ -146,8 +143,7 @@ extension AuthService {
 
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let body = String(data: data, encoding: .utf8) ?? "<non-UTF8>"
-            authLog.notice("[cookies] Multilogin HTTP \(code) body=\(body) — SAPISID via Multilogin unavailable")
+            authLog.notice("[cookies] Multilogin HTTP \(code) — SAPISID via Multilogin unavailable")
             return
         }
 

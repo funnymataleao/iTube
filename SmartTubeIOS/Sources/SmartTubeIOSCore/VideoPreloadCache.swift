@@ -129,6 +129,7 @@ public actor VideoPreloadCache {
     // share a single network request rather than duplicating it.
 
     private var inFlightPlayerFetches: [String: Task<PlayerInfo?, Never>] = [:]
+    private var currentAuthToken: String?
 
     // MARK: - Priority queue + worker pool
     //
@@ -170,8 +171,10 @@ public actor VideoPreloadCache {
     /// Forward the current auth token so prefetch requests can make authenticated calls.
     /// Call this from PlaybackViewModel.updateAuthToken and at app launch.
     public func setAuthToken(_ token: String?) async {
-        cacheLog.notice("[auth] setAuthToken: \(token != nil ? "present" : "nil", privacy: .public)")
-        await api.setAuthToken(token)
+        let effectiveToken = token.flatMap { $0.isEmpty ? nil : $0 }
+        currentAuthToken = effectiveToken
+        cacheLog.notice("[auth] setAuthToken: \(effectiveToken != nil ? "present" : "nil", privacy: .public)")
+        await api.setAuthToken(effectiveToken)
     }
 
     /// Forward the SAPISID cookie so prefetch WEB_CREATOR requests use SAPISIDHASH auth.
@@ -514,6 +517,10 @@ public actor VideoPreloadCache {
         guard !Task.isCancelled else { return }
         let startedAt = Date()
         let allowed = allowedPrefetchDataTypes
+        let sponsorAuthSnapshot = authToken.flatMap { $0.isEmpty ? nil : $0 }
+        let shouldFetchSponsor = sponsorAuthSnapshot != nil
+            && sponsorAuthSnapshot == currentAuthToken
+            && !sponsorCategories.isEmpty
         cacheLog.notice("[prefetch] START \(videoId, privacy: .public) allowed=\(allowed.sorted().joined(separator: ","), privacy: .public)")
 
         // Route through getOrFetchPlayerInfo so a concurrent live-load for the
@@ -522,7 +529,9 @@ public actor VideoPreloadCache {
         // Gate optional fetches on the current network path (Phase K).
         async let nextResult     = allowed.contains("nextInfo")          ? (try? await api.fetchNextInfo(videoId: videoId))  : nil
         async let endCardsResult = allowed.contains("endCards")          ? (try? await api.fetchEndCards(videoId: videoId))  : nil
-        async let sponsorResult  = await sponsorBlock.fetchSegments(videoId: videoId, categories: sponsorCategories)
+        async let sponsorResult: [SponsorSegment]? = shouldFetchSponsor
+            ? await sponsorBlock.fetchSegments(videoId: videoId, categories: sponsorCategories)
+            : nil
         async let deArrowResult  = allowed.contains("deArrowBranding")   ? await deArrow.fetchBranding(videoId: videoId) : nil
 
         // Pass the caller-supplied token directly — no dependency on api.authToken being set —
@@ -557,10 +566,14 @@ public actor VideoPreloadCache {
         store(trackingURLs: tracking,                        for: videoId)
         if let next    { store(nextInfo: next,               for: videoId) }
         if let cards   { store(endCards: cards,              for: videoId) }
-        store(sponsorSegments: sponsor,                      for: videoId)
+        if let sponsor,
+           sponsorAuthSnapshot != nil,
+           sponsorAuthSnapshot == currentAuthToken {
+            store(sponsorSegments: sponsor,                  for: videoId)
+        }
         if let dearrow { store(deArrowBranding: dearrow,     for: videoId) }
 
-        cacheLog.notice("[prefetch] DONE \(videoId, privacy: .public) elapsed=\(elapsed, privacy: .public) playerInfo=\(player != nil, privacy: .public) tracking=\(tracking != nil, privacy: .public) next=\(next != nil, privacy: .public) endCards=\(cards != nil, privacy: .public) sponsor=\(sponsor.count, privacy: .public) deArrow=\(dearrow != nil, privacy: .public)")
+        cacheLog.notice("[prefetch] DONE \(videoId, privacy: .public) elapsed=\(elapsed, privacy: .public) playerInfo=\(player != nil, privacy: .public) tracking=\(tracking != nil, privacy: .public) next=\(next != nil, privacy: .public) endCards=\(cards != nil, privacy: .public) sponsor=\(sponsor?.count ?? 0, privacy: .public) deArrow=\(dearrow != nil, privacy: .public)")
         prefetchTasks.removeValue(forKey: videoId)
     }
 

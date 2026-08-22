@@ -14,4 +14,8 @@ public extension Notification.Name {
     /// Posted when all videos from a channel should be removed from the current feed.
     /// userInfo key: "channelId" (String)
     static let hideChannelFromFeed = Notification.Name("com.smarttube.hideChannelFromFeed")
+    /// Posted as soon as playback actually begins so visible History feeds can
+    /// optimistically prepend the video before YouTube's FEhistory catches up.
+    /// userInfo key: "video" (Video)
+    static let watchHistoryDidChange = Notification.Name("com.smarttube.watchHistoryDidChange")
 }
