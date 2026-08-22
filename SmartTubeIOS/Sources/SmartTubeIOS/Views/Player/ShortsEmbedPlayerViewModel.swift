@@ -384,10 +384,13 @@ final class ShortsEmbedPlayerViewModel: NSObject {
     /// duplicating the URL/HTML construction.
     private func startEmbed(videoId: String) {
         #if os(iOS)
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            shortsLog.error("[\(self.logTag, privacy: .public)] [audioSession] setActive(true) failed: \(error.localizedDescription, privacy: .public)")
+        let audioLogTag = logTag
+        Task {
+            do {
+                try await AudioSessionCoordinator.activatePlayback()
+            } catch {
+                shortsLog.error("[\(audioLogTag, privacy: .public)] [audioSession] activation failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
         #endif
         // Cookie sync happens in loadShort (the await syncYouTubeCookies runs

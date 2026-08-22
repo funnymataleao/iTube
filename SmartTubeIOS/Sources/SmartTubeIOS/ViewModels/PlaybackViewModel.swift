@@ -343,6 +343,9 @@ public final class PlaybackViewModel {
         set { qualityManager.hlsVariantURLs = newValue }
     }
     var controlsTimer: Task<Void, Never>?
+    /// Owns foreground and parked-item audio-session activation so a later
+    /// stop/suspend cannot resume playback after the view has disappeared.
+    @ObservationIgnored var audioSessionTask: Task<Void, Never>?
     let sleepTimer = SleepTimerController()
     /// Remaining minutes on the sleep timer (nil = off). Observable so PlayerView can show it.
     public var sleepTimerMinutes: Int? { sleepTimer.sleepTimerMinutes }
@@ -479,18 +482,8 @@ public final class PlaybackViewModel {
         self.comments = CommentsController(api: api)
 
         player.allowsExternalPlayback = true
-        #if canImport(UIKit)
-        do {
-            // Only configure the audio category at init time. setActive(true) is
-            // deliberately deferred to loadAsync (PlaybackViewModel+Loading.swift ~line 494)
-            // so that cold-launching the app does not interrupt background audio from
-            // other apps before the user starts a video (GitHub issue #54).
-            // setCategory alone does not interrupt other apps per AVAudioSession docs.
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        } catch {
-            playerLog.error("AVAudioSession category setup failed: \(error.localizedDescription)")
-        }
-        #endif
+        // AVAudioSession is configured and activated just before playback by
+        // AudioSessionCoordinator. Its blocking calls never run on the main actor.
         setupTimeObserver()
         setupRateObserver()
         #if canImport(UIKit)
@@ -513,6 +506,7 @@ public final class PlaybackViewModel {
     }
 
     deinit {
+        audioSessionTask?.cancel()
         if let obs = timeObserver { player.removeTimeObserver(obs) }
         rateObserver?.invalidate()
         airPlayObserver?.invalidate()

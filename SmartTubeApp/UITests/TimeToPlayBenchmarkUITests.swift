@@ -36,7 +36,7 @@ import XCTest
 // Run command (serial, result bundle):
 //   RESULT=/tmp/ttp-bench-$(date +%s).xcresult
 //   xcodebuild test \
-//     -workspace /Users/milikadelic/SmartTube/SmartTube.xcworkspace \
+//     -workspace iTube.xcworkspace \
 //     -scheme SmartTube \
 //     -destination "id=6CEE2FAC-7D50-4BD0-95E2-1361EDD7FAF6" \
 //     -only-testing:SmartTubeUITests/TimeToPlayBenchmarkUITests \

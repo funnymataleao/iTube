@@ -92,7 +92,7 @@ SmartTubeIOS/
 ```bash
 git clone https://github.com/funnymataleao/iTube
 cd iTube
-open SmartTube.xcworkspace
+open iTube.xcworkspace
 ```
 
 Select the **iTube** scheme and run on a simulator or device.

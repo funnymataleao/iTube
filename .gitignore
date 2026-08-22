@@ -28,6 +28,9 @@ DerivedData/
 Pods/
 *.xcworkspace/
 !*.xcworkspace/contents.xcworkspacedata
+!iTube.xcworkspace/
+!iTube.xcworkspace/contents.xcworkspacedata
+!iTube.xcworkspace/xcshareddata/swiftpm/Package.resolved
 
 # Fastlane
 fastlane/report.xml

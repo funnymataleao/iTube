@@ -37,7 +37,7 @@ import XCTest
 /// PlayerInfo should already be in `VideoPreloadCache`, giving a cache HIT on load().
 ///
 /// Run via:
-///   xcodebuild test -workspace SmartTube.xcworkspace -scheme SmartTube \
+///   xcodebuild test -workspace iTube.xcworkspace -scheme iTube \
 ///     -destination 'id=6CEE2FAC-7D50-4BD0-95E2-1361EDD7FAF6' \
 ///     -only-testing:SmartTubeUITests/VideoPlaybackBenchmarkUITests \
 ///     -parallel-testing-enabled YES -maximum-parallel-testing-workers 5 \

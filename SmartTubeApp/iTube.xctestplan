@@ -24,7 +24,7 @@
   "testTargets" : [
     {
       "target" : {
-        "containerPath" : "container:SmartTubeApp.xcodeproj",
+        "containerPath" : "container:iTube.xcodeproj",
         "identifier" : "38EEA5DF9BAA36788D776AB0",
         "name" : "SmartTubeUITests"
       }

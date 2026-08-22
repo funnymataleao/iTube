@@ -93,7 +93,7 @@ iOS simulator produces 0 tests and a false "TEST SUCCEEDED"):
 
 ```bash
 xcodebuild test-without-building \
-  -workspace SmartTube.xcworkspace \
+  -workspace iTube.xcworkspace \
   -scheme SmartTube \
   -destination "id=00008132-0016591E3CFB801C" \
   -only-testing:SmartTubeUITests/TOSPlayerUITests/testTOSPlayerPlaysFirstHomeVideo \

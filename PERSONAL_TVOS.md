@@ -5,7 +5,7 @@
 
 ## Установка через Xcode
 
-1. Откройте `SmartTube.xcworkspace`.
+1. Откройте `iTube.xcworkspace`.
 2. Выберите схему **iTube**.
 3. Выберите спаренную Apple TV или Apple TV 4K Simulator.
 4. В Signing & Capabilities выберите свою Personal Team, если Xcode попросит.

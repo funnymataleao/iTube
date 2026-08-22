@@ -609,11 +609,12 @@ final class TOSPlayerViewModel: NSObject {
         // Same .playback/.moviePlayback category PlaybackViewModel uses — more
         // correct than leaving the category unset, though confirmed (#283) this
         // alone does not make TOS audio survive backgrounding; see task-283.
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            tosLog.error("[audioSession] setCategory/setActive failed: \(error.localizedDescription, privacy: .public)")
+        Task {
+            do {
+                try await AudioSessionCoordinator.activatePlayback()
+            } catch {
+                tosLog.error("[audioSession] activation failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
         #endif
         // Cookie sync happens in startIfNeeded() (the await syncYouTubeCookies

@@ -13,7 +13,7 @@ import XCTest
 // menu and remain in the accessibility tree even while the menu is visible.
 //
 // Run against the iTube tvOS scheme:
-//   xcodebuild test -workspace SmartTube.xcworkspace -scheme iTube
+//   xcodebuild test -workspace iTube.xcworkspace -scheme iTube
 //     -destination "id=30E83929-0C67-4572-82C4-FE0F228EA835"
 //     -only-testing:SmartTubeTVUITests/TVPlayerControlsUITests
 

@@ -250,13 +250,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		50E5A11050E5A11050E5A110 /* Exceptions for "iTube" folder in "iTube" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"GoogleService-Info.plist",
-			);
-			target = 67E6B67A2F9535CD00CD372F /* iTube */;
-		};
 		67A5E80C2FB3932400C53D61 /* Exceptions for "SafariExtension" folder in "SafariExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -277,9 +270,6 @@
 		};
 		67E6B67C2F9535CD00CD372F /* iTube */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				50E5A11050E5A11050E5A110 /* Exceptions for "iTube" folder in "iTube" target */,
-			);
 			path = iTube;
 			sourceTree = "<group>";
 		};
@@ -334,15 +324,8 @@
 			children = (
 				88CC56FC3039CDEC00F6F38A /* iTube.storekit */,
 				D1E07E1C2FBB3A95D6BDC0EF /* Packages */,
-				32582044D5D706C4EC49DA00 /* SmartTubeApp */,
-				9084B7F6DD70E282DD4342A7 /* Sources */,
-				30B4BA37D4FD93516937E9D9 /* UITests */,
 				67E6B67C2F9535CD00CD372F /* iTube */,
-				67A5E7F42FB3932400C53D61 /* SafariExtension */,
 				5EF0B6AF2643BF476B25C7C0 /* Products */,
-				A6606018E9CE8927C08D84DF /* Frameworks */,
-				3A6CBA986681DD6D6BBFD4EA /* DownloadWidget */,
-				AA01000000000000000000AE /* ShareExtension */,
 			);
 			sourceTree = "<group>";
 		};
@@ -459,12 +442,7 @@
 		5EF0B6AF2643BF476B25C7C0 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				6ACA5CEA633CF065619F786C /* SmartTube.app */,
-				DA3810E40296738F4C5E0B95 /* SmartTubeUITests.xctest */,
-				79E77E6DD18B12CA7A5341D0 /* SmartTubeDownloadWidget.appex */,
-				AA01000000000000000000A3 /* SmartTubeShareExtension.appex */,
 				67E6B67B2F9535CD00CD372F /* iTube.app */,
-				67A5E7F32FB3932400C53D61 /* SafariExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -651,21 +629,12 @@
 				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
-					38EEA5DF9BAA36788D776AB0 = {
-						TestTargetID = 5A4C56D3A7C36BE68C3C3CE0;
-					};
-					5A4C56D3A7C36BE68C3C3CE0 = {
-						ProvisioningStyle = Automatic;
-					};
-					67A5E7F22FB3932400C53D61 = {
-						CreatedOnToolsVersion = 26.4.1;
-					};
 					67E6B67A2F9535CD00CD372F = {
 						CreatedOnToolsVersion = 26.4;
 					};
 				};
 			};
-			buildConfigurationList = 0B664A7C4FCE77DC38FBE17B /* Build configuration list for PBXProject "SmartTubeApp" */;
+			buildConfigurationList = 0B664A7C4FCE77DC38FBE17B /* Build configuration list for PBXProject "iTube" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -697,12 +666,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				5A4C56D3A7C36BE68C3C3CE0 /* SmartTube */,
-				38EEA5DF9BAA36788D776AB0 /* SmartTubeUITests */,
-				92FF8ABD9CCECACCB7D9D2F1 /* SmartTubeDownloadWidget */,
-				AA01000000000000000000A7 /* SmartTubeShareExtension */,
 				67E6B67A2F9535CD00CD372F /* iTube */,
-				67A5E7F22FB3932400C53D61 /* SafariExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -1468,7 +1432,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		0B664A7C4FCE77DC38FBE17B /* Build configuration list for PBXProject "SmartTubeApp" */ = {
+		0B664A7C4FCE77DC38FBE17B /* Build configuration list for PBXProject "iTube" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4AF41A3BD9270B2E62E2D1FD /* Debug */,

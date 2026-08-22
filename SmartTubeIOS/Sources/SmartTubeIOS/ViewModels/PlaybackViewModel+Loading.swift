@@ -130,16 +130,24 @@ extension PlaybackViewModel {
                 }
             }
             #if canImport(UIKit)
-            do {
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-                playerLog.error("[fix12] AVAudioSession setActive failed: \(error.localizedDescription)")
-            }
             setupRemoteCommandCenter()
             UIApplication.shared.isIdleTimerDisabled = true
-            #endif
+            audioSessionTask?.cancel()
+            audioSessionTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    try await AudioSessionCoordinator.activatePlayback()
+                } catch {
+                    playerLog.error("[fix12] AVAudioSession activation failed: \(error.localizedDescription)")
+                }
+                guard !Task.isCancelled else { return }
+                self.player.rate = Float(self.settings.playbackSpeed)
+                self.isPlaying = true
+            }
+            #else
             player.rate = Float(settings.playbackSpeed)
             isPlaying = true
+            #endif
             return
         }
         // Different video or parked item expired — clear parked state and tear down old item.
@@ -309,19 +317,27 @@ extension PlaybackViewModel {
     public func handleForeground() {
         guard player.currentItem != nil else { return }
         #if canImport(UIKit)
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            playerLog.error("AVAudioSession reactivation failed: \(error.localizedDescription)")
+        audioSessionTask?.cancel()
+        audioSessionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await AudioSessionCoordinator.activatePlayback()
+            } catch {
+                playerLog.error("AVAudioSession reactivation failed: \(error.localizedDescription)")
+            }
+            guard !Task.isCancelled else { return }
+            // Resume only if we still consider ourselves to be in playing state.
+            if self.isPlaying && self.player.rate == 0 {
+                self.player.rate = Float(self.settings.playbackSpeed)
+                playerLog.notice("[handleForeground] resumed player after foreground transition")
+            }
         }
-        #endif
-        // Resume only if we consider ourselves to be in playing state.
-        // isPlaying is kept in sync with player.rate via KVO, so this only fires
-        // when the player was paused while still intending to play (e.g. background transition).
+        #else
         if isPlaying && player.rate == 0 {
             player.rate = Float(settings.playbackSpeed)
             playerLog.notice("[handleForeground] resumed player after foreground transition")
         }
+        #endif
     }
 
     /// Call when the app enters the background.
@@ -358,6 +374,8 @@ extension PlaybackViewModel {
         // Firebase: a013be1c (EXC_BREAKPOINT in EnvironmentValues.subscript.getter).
         loadTask?.cancel()
         loadTask = nil
+        audioSessionTask?.cancel()
+        audioSessionTask = nil
         exhaustiveRetryTask?.cancel()
         exhaustiveRetryTask = nil
         // rateObserver's KVO closure can independently re-spawn a brand-new
@@ -452,10 +470,10 @@ extension PlaybackViewModel {
         // during which PlayerRemoteXPC reports err=-12860/-12785 and the widget is absent.
         setupRemoteCommandCenter()
         do {
-            try AVAudioSession.sharedInstance().setActive(true)
+            try await AudioSessionCoordinator.activatePlayback()
             playerLog.notice("[loadAsync] AVAudioSession activated early (lock-screen pre-seed)")
         } catch {
-            playerLog.error("[loadAsync] early setActive failed: \(error.localizedDescription)")
+            playerLog.error("[loadAsync] early activation failed: \(error.localizedDescription)")
         }
         updateNowPlayingInfo()
         #endif
@@ -603,9 +621,9 @@ extension PlaybackViewModel {
                 #if canImport(UIKit)
                 setupRemoteCommandCenter()
                 do {
-                    try AVAudioSession.sharedInstance().setActive(true)
+                    try await AudioSessionCoordinator.activatePlayback()
                 } catch {
-                    playerLog.error("[loadAsync] local: AVAudioSession setActive failed: \(error.localizedDescription)")
+                    playerLog.error("[loadAsync] local: AVAudioSession activation failed: \(error.localizedDescription)")
                 }
                 #endif
                 player.rate = Float(settings.playbackSpeed)
@@ -1077,10 +1095,10 @@ extension PlaybackViewModel {
             // the session to other apps; without this call on the next load() the player
             // starts silently because AVFoundation cannot acquire the inactive session.
             do {
-                try AVAudioSession.sharedInstance().setActive(true)
+                try await AudioSessionCoordinator.activatePlayback()
                 playerLog.notice("[loadAsync] AVAudioSession activated before playback")
             } catch {
-                playerLog.error("[loadAsync] AVAudioSession setActive(true) failed: \(error.localizedDescription)")
+                playerLog.error("[loadAsync] AVAudioSession activation failed: \(error.localizedDescription)")
             }
             #endif
             playerLog.notice("[loadAsync] setting rate=\(self.settings.playbackSpeed) — player.timeControlStatus=\(self.player.timeControlStatus.rawValue) isAudioOnlyMode=\(self.isAudioOnlyMode)")
@@ -1171,10 +1189,14 @@ extension PlaybackViewModel {
         parkedVideoId = currentVideo?.id
         isPlaying = false
         #if canImport(UIKit)
-        do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        } catch {
-            playerLog.error("AVAudioSession deactivation failed: \(error.localizedDescription)")
+        audioSessionTask?.cancel()
+        audioSessionTask = nil
+        Task {
+            do {
+                try await AudioSessionCoordinator.deactivatePlayback()
+            } catch {
+                playerLog.error("AVAudioSession deactivation failed: \(error.localizedDescription)")
+            }
         }
         #endif
         loadTask?.cancel()

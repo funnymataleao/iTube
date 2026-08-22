@@ -25,7 +25,7 @@ import XCTest
 ///
 /// Run via:
 ///   xcodebuild test \
-///     -workspace SmartTube.xcworkspace -scheme iTube \
+///     -workspace iTube.xcworkspace -scheme iTube \
 ///     -destination 'id=E16182A3-794A-43DD-B349-A1FFBE744AF8' \
 ///     -only-testing:SmartTubeTVUITests/TVVideoPlaybackBenchmarkUITests \
 ///     -parallel-testing-enabled NO \

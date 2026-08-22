@@ -53,9 +53,9 @@ extension PlaybackViewModel {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     do {
-                        try AVAudioSession.sharedInstance().setActive(true)
+                        try await AudioSessionCoordinator.activatePlayback()
                     } catch {
-                        playerLog.error("[interruption] setActive failed: \(error.localizedDescription)")
+                        playerLog.error("[interruption] activation failed: \(error.localizedDescription)")
                     }
                     if options.contains(.shouldResume) && self.wasPlayingBeforeInterruption {
                         self.player.rate = Float(self.settings.playbackSpeed)

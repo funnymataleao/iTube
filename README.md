@@ -30,8 +30,8 @@ Purchases use StoreKit. The purchase sheet is the source of truth for the locali
 
 ```text
 SmartTubeIOS/          Shared Swift package and tests
-SmartTubeApp/          Xcode project and Apple-platform app targets
-SmartTube.xcworkspace/ Workspace for the project and local package
+SmartTubeApp/          Xcode project and Apple-platform sources
+iTube.xcworkspace/     Canonical Apple TV workspace
 docs/                  GitHub Pages site
 ```
 
@@ -48,10 +48,10 @@ Requirements:
 ```sh
 git clone https://github.com/funnymataleao/iTube.git
 cd iTube
-open SmartTube.xcworkspace
+open iTube.xcworkspace
 ```
 
-Choose the **iTube** scheme and an Apple TV or tvOS Simulator destination.
+The workspace exposes only the **iTube** scheme. Choose an Apple TV or tvOS Simulator destination.
 
 Run package tests with:
 

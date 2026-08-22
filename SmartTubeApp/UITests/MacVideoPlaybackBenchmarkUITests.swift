@@ -20,7 +20,7 @@ import XCTest
 //
 // Run via:
 //   xcodebuild test \
-//     -workspace SmartTube.xcworkspace -scheme SmartTube \
+//     -workspace iTube.xcworkspace -scheme iTube \
 //     -destination "platform=macOS" \
 //     -only-testing:SmartTubeUITests/MacVideoPlaybackBenchmarkUITests \
 //     -parallel-testing-enabled NO \
